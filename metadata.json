@@ -1,0 +1,6 @@
+{
+  "name": "Fantasma OSINT — Plataforma de Investigación Visual",
+  "description": "Plataforma visual integral de investigación OSINT 100% Client-Side para correlación de grafos, familias de alias, inteligencia de dominios/IPs/correos, mapas y reportes.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
