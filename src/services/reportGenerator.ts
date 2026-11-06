@@ -1,537 +1,212 @@
 import { jsPDF } from 'jspdf';
 import { InvestigationCase } from '../types/osint';
+import { BAND_LABEL, identityBand } from './aliasAndConfidenceEngine';
+import { canonicalCaseJson, caseSha256, csvCell, downloadText, fileSafe, safeHttpUrl, sha256Hex } from '../engine/integrity';
+import { buildStixBundle } from '../engine/stix';
+
+/** SHA-256 del expediente: el del archivo JSON que descarga «Exportar JSON». */
+export const computeCaseSha256 = caseSha256;
+
+const jsonName = (c: InvestigationCase) => `Caso_${fileSafe(c.seedQuery)}_${c.id.slice(-6)}.json`;
+
+const classify = (n: InvestigationCase['nodes'][number]) => {
+  if (n.analystReviewed) return n.verifiedStatus === 'verified' ? 'Confirmado por el analista' : n.verifiedStatus === 'false_positive' ? 'Descartado por el analista' : '';
+  if (n.evidence) return BAND_LABEL[identityBand(n.confidence.total)];
+  return n.type === 'seed' ? 'Semilla' : 'Dato técnico';
+};
 
 /**
- * Computes a cryptographic SHA-256 hash of the investigation case for forensic Chain of Custody.
- */
-export async function computeCaseSha256(osintCase: InvestigationCase): Promise<string> {
-  try {
-    const canonical = JSON.stringify({
-      id: osintCase.id,
-      seedQuery: osintCase.seedQuery,
-      seedType: osintCase.seedType,
-      nodes: osintCase.nodes.map((n) => ({
-        id: n.id,
-        label: n.label,
-        type: n.type,
-        platform: n.platform,
-        score: n.confidence.total,
-      })),
-      edges: osintCase.edges,
-      timeline: osintCase.timeline,
-    });
-    const encoder = new TextEncoder();
-    const data = encoder.encode(canonical);
-    const hashBuffer = await crypto.subtle.digest('SHA-256', data);
-    const hashArray = Array.from(new Uint8Array(hashBuffer));
-    return hashArray.map((b) => b.toString(16).padStart(2, '0')).join('');
-  } catch {
-    return 'sha256-unavailable-in-non-secure-context';
-  }
-}
-
-/**
- * Exports the entire OSINT case as a multi-section PDF using jsPDF (100% Client-Side),
- * including the cryptographic Chain of Custody SHA-256 digest.
+ * Informe en PDF. Incluye el SHA-256 del JSON del caso: quien reciba el PDF y el JSON
+ * puede comprobar que el JSON no se ha tocado.
  */
 export async function exportCaseToPdf(osintCase: InvestigationCase): Promise<void> {
-  const sha256 = await computeCaseSha256(osintCase);
+  const sha256 = await caseSha256(osintCase);
   const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
   const pageWidth = doc.internal.pageSize.getWidth();
   const margin = 14;
+  const width = pageWidth - margin * 2;
   let y = 18;
-
-  const checkPageBreak = (neededHeight = 18) => {
-    if (y + neededHeight > 278) {
+  const pageBreak = (h = 18) => {
+    if (y + h > 280) {
       doc.addPage();
       y = 18;
     }
   };
-
-  // Header Banner
-  doc.setFillColor(15, 23, 42);
-  doc.rect(0, 0, pageWidth, 38, 'F');
-  doc.setTextColor(248, 250, 252);
-  doc.setFont('helvetica', 'bold');
-  doc.setFontSize(15.5);
-  doc.text('FANTASMA OSINT — INFORME PERICIAL DE INTELIGENCIA', margin, 13);
-
-  doc.setFont('helvetica', 'normal');
-  doc.setFontSize(9);
-  doc.setTextColor(248, 113, 113);
-  doc.text('Un Fantasma en el Sistema | https://www.unfantasmaenelsistema.com/', margin, 19.5);
-
-  doc.setTextColor(148, 163, 184);
-  doc.text(
-    `Caso ID: ${osintCase.id}  |  Semilla: ${osintCase.seedQuery} (${osintCase.seedType.toUpperCase()})  |  Fecha: ${new Date().toISOString().slice(0, 10)}`,
-    margin,
-    26
-  );
-
-  doc.setFont('courier', 'normal');
-  doc.setFontSize(7.5);
-  doc.setTextColor(16, 185, 129);
-  doc.text(`SHA-256 Custodia: ${sha256}`, margin, 32.5);
-
-  y = 46;
-
-  // Section 1: Case Metadata
-  doc.setTextColor(15, 23, 42);
-  doc.setFont('helvetica', 'bold');
-  doc.setFontSize(12);
-  doc.text(`1. Ficha del Expediente: ${osintCase.name}`, margin, y);
-  y += 6;
-
-  doc.setFont('helvetica', 'normal');
-  doc.setFontSize(9.5);
-  doc.setTextColor(51, 65, 85);
-  const descLines = doc.splitTextToSize(osintCase.description || 'Sin descripción adicional.', pageWidth - margin * 2);
-  doc.text(descLines, margin, y);
-  y += descLines.length * 4.8 + 4;
-
-  // Section 2: Executive AI / Heuristic Summary
-  if (osintCase.aiSummary) {
-    checkPageBreak(30);
+  const para = (text: string, size = 9, color: [number, number, number] = [51, 65, 85], indent = 0, lh = 4.3) => {
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(size);
+    doc.setTextColor(...color);
+    for (const line of doc.splitTextToSize(text, width - indent) as string[]) {
+      pageBreak(6);
+      doc.text(line, margin + indent, y);
+      y += lh;
+    }
+  };
+  const heading = (text: string) => {
+    pageBreak(16);
+    y += 3;
     doc.setFont('helvetica', 'bold');
     doc.setFontSize(11.5);
     doc.setTextColor(15, 23, 42);
-    doc.text('2. Sintesis Ejecutiva de Inteligencia', margin, y);
-    y += 6;
-
-    doc.setFont('helvetica', 'normal');
-    doc.setFontSize(9);
-    doc.setTextColor(51, 65, 85);
-    const sumLines = doc.splitTextToSize(osintCase.aiSummary, pageWidth - margin * 2);
-    for (const line of sumLines) {
-      checkPageBreak(6);
-      doc.text(line, margin, y);
-      y += 4.5;
-    }
-    y += 4;
-  }
-
-  // Section 3: Discovered Entities & Confidence Scoring (0-100)
-  checkPageBreak(24);
-  doc.setFont('helvetica', 'bold');
-  doc.setFontSize(11.5);
-  doc.setTextColor(15, 23, 42);
-  doc.text(`3. Nodos de Evidencia y Puntuacion de Confianza (${osintCase.nodes.length})`, margin, y);
-  y += 7;
-
-  const sortedNodes = [...osintCase.nodes].sort((a, b) => b.confidence.total - a.confidence.total);
-  for (const node of sortedNodes) {
-    checkPageBreak(16);
-    doc.setFont('helvetica', 'bold');
-    doc.setFontSize(9.5);
-    doc.setTextColor(15, 23, 42);
-    doc.text(
-      `[${node.confidence.total}/100] ${node.label} — ${node.platform} (${node.category})`,
-      margin,
-      y
-    );
-    y += 4.5;
-
-    doc.setFont('helvetica', 'normal');
-    doc.setFontSize(8.5);
-    doc.setTextColor(71, 85, 105);
-    const reasonStr = node.confidence.reasons[0] || 'Hallazgo correlacionado en el grafo.';
-    const metaPairs = Object.entries(node.metadata)
-      .slice(0, 3)
-      .map(([k, v]) => `${k}: ${v}`)
-      .join(' | ');
-    const detailLines = doc.splitTextToSize(
-      `Motivo Score: ${reasonStr}${metaPairs ? ` — Datos: ${metaPairs}` : ''}`,
-      pageWidth - margin * 2
-    );
-    doc.text(detailLines, margin + 3, y);
-    y += detailLines.length * 4.2 + 2.5;
-  }
-
-  // Section 4: Chronological Timeline
-  checkPageBreak(22);
-  y += 3;
-  doc.setFont('helvetica', 'bold');
-  doc.setFontSize(11.5);
-  doc.setTextColor(15, 23, 42);
-  doc.text(`4. Linea de Tiempo Cronologica (${osintCase.timeline.length} eventos)`, margin, y);
-  y += 6.5;
-
-  for (const ev of osintCase.timeline) {
-    checkPageBreak(12);
-    doc.setFont('helvetica', 'bold');
-    doc.setFontSize(9);
-    doc.setTextColor(15, 23, 42);
-    doc.text(`${ev.date} — ${ev.title} (${ev.sourcePlatform})`, margin, y);
-    y += 4.2;
-    doc.setFont('helvetica', 'normal');
-    doc.setFontSize(8.5);
-    doc.setTextColor(71, 85, 105);
-    const evLines = doc.splitTextToSize(ev.description, pageWidth - margin * 2);
-    doc.text(evLines, margin + 3, y);
-    y += evLines.length * 4.2 + 2;
-  }
-
-  // Section 5: Geographic Locations & Manual Tasks
-  checkPageBreak(22);
-  y += 3;
-  doc.setFont('helvetica', 'bold');
-  doc.setFontSize(11.5);
-  doc.setTextColor(15, 23, 42);
-  doc.text(`5. Geolocalizacion (${osintCase.locations.length}) y Tareas Manuales (${osintCase.manualTasks.length})`, margin, y);
-  y += 6.5;
-
-  for (const loc of osintCase.locations) {
-    checkPageBreak(10);
-    doc.setFont('helvetica', 'normal');
-    doc.setFontSize(8.5);
-    doc.setTextColor(51, 65, 85);
-    doc.text(
-      `• [GEO ${loc.lat.toFixed(3)}, ${loc.lng.toFixed(3)}] ${loc.title}: ${loc.subtitle} (Confianza: ${loc.confidence}%)`,
-      margin,
-      y
-    );
-    y += 4.8;
-  }
-
-  for (const task of osintCase.manualTasks.slice(0, 10)) {
-    checkPageBreak(10);
-    doc.setFont('helvetica', 'normal');
-    doc.setFontSize(8.5);
-    doc.setTextColor(180, 83, 9);
-    doc.text(`• [${task.reason}] ${task.platform}: ${task.url} (${task.status})`, margin, y);
-    y += 4.8;
-  }
-
-  const filename = `Reporte_OSINT_${osintCase.seedQuery.replace(/[^a-z0-9]/gi, '_')}_${new Date().toISOString().slice(0, 10)}.pdf`;
-  doc.save(filename);
-}
-
-/**
- * Exports a complete, standalone Static HTML5 Report with embedded styles, Chain of Custody SHA-256, and branding.
- */
-export async function exportCaseToHtml(osintCase: InvestigationCase): Promise<void> {
-  const sha256 = await computeCaseSha256(osintCase);
-  const sortedNodes = [...osintCase.nodes].sort((a, b) => b.confidence.total - a.confidence.total);
-  const escapeHtml = (str: string) =>
-    String(str || '')
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;');
-
-  const html = `<!DOCTYPE html>
-<html lang="es">
-<head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Reporte Pericial OSINT — ${escapeHtml(osintCase.name)}</title>
-  <style>
-    :root {
-      --bg: #090d16;
-      --surface: #0f172a;
-      --border: #1e293b;
-      --text: #f1f5f9;
-      --muted: #94a3b8;
-      --accent: #ef4444;
-    }
-    * { box-sizing: border-box; }
-    body {
-      margin: 0;
-      padding: 32px 20px;
-      background: var(--bg);
-      color: var(--text);
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-      line-height: 1.6;
-    }
-    .container { max-width: 1120px; margin: 0 auto; }
-    header {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      padding: 24px;
-      background: var(--surface);
-      border: 1px solid var(--border);
-      border-radius: 12px;
-      margin-bottom: 24px;
-    }
-    header h1 { margin: 0 0 6px 0; font-size: 22px; }
-    header a { color: #f87171; text-decoration: none; font-weight: 600; }
-    .hash-bar {
-      font-family: monospace;
-      font-size: 12px;
-      background: #020617;
-      border: 1px solid #1e293b;
-      color: #34d399;
-      padding: 10px 14px;
-      border-radius: 8px;
-      margin-bottom: 24px;
-      word-break: break-all;
-    }
-    .section {
-      background: var(--surface);
-      border: 1px solid var(--border);
-      border-radius: 12px;
-      padding: 24px;
-      margin-bottom: 24px;
-    }
-    h2 { margin-top: 0; font-size: 17px; border-bottom: 1px solid var(--border); padding-bottom: 10px; }
-    table { width: 100%; border-collapse: collapse; font-size: 13px; }
-    th, td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--border); vertical-align: top; }
-    th { color: var(--muted); font-weight: 600; }
-    .score { font-family: monospace; font-weight: 700; }
-    .score-high { color: #4ade80; }
-    .score-med { color: #fbbf24; }
-    .score-low { color: #f87171; }
-    pre { white-space: pre-wrap; background: #020617; padding: 16px; border-radius: 8px; border: 1px solid var(--border); font-size: 13px; }
-    @media print {
-      body { background: #fff; color: #0f172a; padding: 0; }
-      header, .section, pre, .hash-bar { background: #fff; border-color: #cbd5e1; color: #0f172a; }
-    }
-  </style>
-</head>
-<body>
-  <div class="container">
-    <header>
-      <div>
-        <h1>${escapeHtml(osintCase.name)}</h1>
-        <div style="color: var(--muted); font-size: 13px;">
-          Semilla: <strong>${escapeHtml(osintCase.seedQuery)}</strong> (${escapeHtml(osintCase.seedType.toUpperCase())}) · 
-          Generado: ${new Date().toLocaleString('es-ES')} · 
-          Plataforma <a href="https://www.unfantasmaenelsistema.com/" target="_blank" rel="noopener">Un Fantasma en el Sistema</a>
-        </div>
-      </div>
-      <button onclick="window.print()" style="background:#ef4444;color:#fff;border:none;padding:10px 16px;border-radius:8px;cursor:pointer;font-weight:600;">
-        Imprimir / Guardar PDF
-      </button>
-    </header>
-
-    <div class="hash-bar">
-      SELLO DE CADENA DE CUSTODIA DIGITAL (SHA-256): ${sha256}
-    </div>
-
-    ${
-      osintCase.aiSummary
-        ? `<div class="section">
-            <h2>Síntesis Ejecutiva de Inteligencia</h2>
-            <pre>${escapeHtml(osintCase.aiSummary)}</pre>
-          </div>`
-        : ''
-    }
-
-    <div class="section">
-      <h2>Entidades Descubiertas y Puntuación de Confianza (${sortedNodes.length})</h2>
-      <table>
-        <thead>
-          <tr>
-            <th>Confianza</th>
-            <th>Entidad / Hallazgo</th>
-            <th>Plataforma / Categoría</th>
-            <th>Familia de Alias</th>
-            <th>Justificación y Metadatos</th>
-          </tr>
-        </thead>
-        <tbody>
-          ${sortedNodes
-            .map(
-              (n) => `<tr>
-                <td class="score ${n.confidence.total >= 75 ? 'score-high' : n.confidence.total >= 50 ? 'score-med' : 'score-low'}">${n.confidence.total}/100</td>
-                <td>
-                  <strong>${escapeHtml(n.label)}</strong><br/>
-                  <span style="color:var(--muted);font-size:12px;">${escapeHtml(n.subtitle || '')}</span>
-                  ${n.url ? `<br/><a href="${escapeHtml(n.url)}" target="_blank" style="color:#60a5fa;font-size:12px;">${escapeHtml(n.url)}</a>` : ''}
-                </td>
-                <td>${escapeHtml(n.platform)}<br/><span style="color:var(--muted);font-size:12px;">${escapeHtml(n.category)}</span></td>
-                <td>${escapeHtml(n.aliasFamily)}</td>
-                <td>
-                  <div style="margin-bottom:4px;">${escapeHtml(n.confidence.reasons.join(' · '))}</div>
-                  <div style="color:var(--muted);font-family:monospace;font-size:11px;">
-                    ${escapeHtml(
-                      Object.entries(n.metadata)
-                        .map(([k, v]) => `${k}: ${v}`)
-                        .join(' | ')
-                    )}
-                  </div>
-                </td>
-              </tr>`
-            )
-            .join('')}
-        </tbody>
-      </table>
-    </div>
-
-    <div class="section">
-      <h2>Línea de Tiempo Cronológica (${osintCase.timeline.length})</h2>
-      <table>
-        <thead>
-          <tr>
-            <th>Fecha</th>
-            <th>Hito / Evento</th>
-            <th>Fuente</th>
-            <th>Confianza</th>
-            <th>Detalle</th>
-          </tr>
-        </thead>
-        <tbody>
-          ${osintCase.timeline
-            .map(
-              (t) => `<tr>
-                <td style="font-family:monospace;white-space:nowrap;">${escapeHtml(t.date)}</td>
-                <td><strong>${escapeHtml(t.title)}</strong></td>
-                <td>${escapeHtml(t.sourcePlatform)}</td>
-                <td class="score">${t.confidence}/100</td>
-                <td>${escapeHtml(t.description)}</td>
-              </tr>`
-            )
-            .join('')}
-        </tbody>
-      </table>
-    </div>
-  </div>
-</body>
-</html>`;
-
-  const blob = new Blob([html], { type: 'text/html;charset=utf-8' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = `Reporte_OSINT_${osintCase.seedQuery.replace(/[^a-z0-9]/gi, '_')}.html`;
-  a.click();
-  URL.revokeObjectURL(url);
-}
-
-/**
- * Exports the raw case JSON for backup or sharing between analysts.
- */
-export function exportCaseToJson(osintCase: InvestigationCase): void {
-  const blob = new Blob([JSON.stringify(osintCase, null, 2)], { type: 'application/json' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = `Caso_OSINT_${osintCase.seedQuery.replace(/[^a-z0-9]/gi, '_')}.json`;
-  a.click();
-  URL.revokeObjectURL(url);
-}
-
-/**
- * Exports the OSINT Case as an OASIS STIX 2.1 Cyber Threat Intelligence Bundle (.stix.json)
- * compatible with OpenCTI, MISP, and TheHive.
- */
-export function exportCaseToStix21(osintCase: InvestigationCase): void {
-  const nowIso = new Date().toISOString();
-  const identityAuthorId = 'identity--fantasma-osint-system-0001';
-
-  const objects: any[] = [
-    {
-      type: 'identity',
-      spec_version: '2.1',
-      id: identityAuthorId,
-      created: nowIso,
-      modified: nowIso,
-      name: 'Fantasma OSINT — Un Fantasma en el Sistema',
-      identity_class: 'organization',
-      contact_information: 'https://www.unfantasmaenelsistema.com/',
-    },
-  ];
-
-  const nodeStixIdMap = new Map<string, string>();
-
-  osintCase.nodes.forEach((n, idx) => {
-    const stixType =
-      n.type === 'ip'
-        ? 'ipv4-addr'
-        : n.type === 'domain' || n.type === 'subdomain'
-        ? 'domain-name'
-        : n.type === 'email'
-        ? 'email-addr'
-        : 'user-account';
-
-    const stixId = `${stixType}--${osintCase.id.replace(/[^a-z0-9]/gi, '')}-${idx + 1000}`;
-    nodeStixIdMap.set(n.id, stixId);
-
-    objects.push({
-      type: stixType,
-      spec_version: '2.1',
-      id: stixId,
-      value: n.label,
-      confidence: n.confidence.total,
-      labels: [n.platform, n.category, n.aliasFamily, n.verifiedStatus],
-      extensions: {
-        'x-fantasma-osint': {
-          url: n.url || null,
-          reasons: n.confidence.reasons,
-          metadata: n.metadata,
-        },
-      },
-    });
-  });
-
-  osintCase.edges.forEach((e, idx) => {
-    const sourceRef = nodeStixIdMap.get(e.source);
-    const targetRef = nodeStixIdMap.get(e.target);
-    if (sourceRef && targetRef) {
-      objects.push({
-        type: 'relationship',
-        spec_version: '2.1',
-        id: `relationship--${osintCase.id.replace(/[^a-z0-9]/gi, '')}-${idx + 5000}`,
-        created: nowIso,
-        modified: nowIso,
-        relationship_type: e.relation,
-        source_ref: sourceRef,
-        target_ref: targetRef,
-        created_by_ref: identityAuthorId,
-      });
-    }
-  });
-
-  const bundle = {
-    type: 'bundle',
-    id: `bundle--fantasma-osint-${Date.now()}`,
-    objects,
+    doc.text(text, margin, y);
+    y += 6.5;
   };
 
-  const blob = new Blob([JSON.stringify(bundle, null, 2)], { type: 'application/json' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = `STIX21_${osintCase.seedQuery.replace(/[^a-z0-9]/gi, '_')}.stix.json`;
-  a.click();
-  URL.revokeObjectURL(url);
-}
+  doc.setFillColor(15, 23, 42);
+  doc.rect(0, 0, pageWidth, 40, 'F');
+  doc.setTextColor(248, 250, 252);
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(15);
+  doc.text('FANTASMA OSINT — INFORME DE INVESTIGACIÓN', margin, 13);
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(9);
+  doc.setTextColor(248, 113, 113);
+  doc.text('Un Fantasma en el Sistema · https://www.unfantasmaenelsistema.com/', margin, 19.5);
+  doc.setTextColor(148, 163, 184);
+  doc.text(doc.splitTextToSize(`Caso: ${osintCase.name} · Semilla: ${osintCase.seedQuery} (${osintCase.seedType}) · ${new Date().toISOString().slice(0, 10)}`, width), margin, 26);
+  doc.setFont('courier', 'normal');
+  doc.setFontSize(7);
+  doc.setTextColor(16, 185, 129);
+  doc.text(`SHA-256 de ${jsonName(osintCase)}: ${sha256}`, margin, 35);
+  y = 48;
 
-/**
- * Exports the OSINT Graph to CSV format compatible with Maltego & Gephi.
- */
-export function exportCaseToMaltegoCsv(osintCase: InvestigationCase): void {
-  const rows: string[] = [
-    'Source_Entity,Target_Entity,Relationship,Target_Type,Platform,Confidence_Score,Verified_Status,URL',
-  ];
+  if (osintCase.isDemo) para('CASO DE EJEMPLO CON DATOS FICTICIOS.', 9.5, [185, 28, 28]);
+  heading('1. Descripción');
+  para(osintCase.description || 'Sin descripción.');
+  const hintsText = Object.entries(osintCase.contextHints).filter(([, v]) => v).map(([k, v]) => `${k}: ${v}`).join(' · ');
+  para(`Pistas del analista: ${hintsText || 'ninguna'}`, 8.5, [71, 85, 105]);
 
-  const nodeMap = new Map(osintCase.nodes.map((n) => [n.id, n]));
-  const esc = (v: string | number) => `"${String(v ?? '').replace(/"/g, '""')}"`;
-
-  for (const edge of osintCase.edges) {
-    const s = nodeMap.get(edge.source);
-    const t = nodeMap.get(edge.target);
-    if (!s || !t) continue;
-    rows.push(
-      [
-        esc(s.label),
-        esc(t.label),
-        esc(edge.relation),
-        esc(t.type),
-        esc(t.platform),
-        t.confidence.total,
-        esc(t.verifiedStatus),
-        esc(t.url || ''),
-      ].join(',')
-    );
+  if (osintCase.aiSummary) {
+    heading('2. Resumen');
+    para(osintCase.aiSummary);
   }
 
-  const blob = new Blob([rows.join('\n')], { type: 'text/csv;charset=utf-8' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = `Maltego_Gephi_${osintCase.seedQuery.replace(/[^a-z0-9]/gi, '_')}.csv`;
-  a.click();
-  URL.revokeObjectURL(url);
+  heading(`3. Hallazgos (${osintCase.nodes.length})`);
+  const sorted = [...osintCase.nodes].sort((a, b) => Number(!!b.evidence) - Number(!!a.evidence) || b.confidence.total - a.confidence.total);
+  for (const n of sorted) {
+    pageBreak(14);
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(9.2);
+    doc.setTextColor(15, 23, 42);
+    for (const line of doc.splitTextToSize(`[${n.confidence.total}/100 · ${classify(n)}] ${n.label} — ${n.platform}`, width) as string[]) {
+      pageBreak(6);
+      doc.text(line, margin, y);
+      y += 4.3;
+    }
+    const meta = Object.entries(n.metadata).slice(0, 5).map(([k, v]) => `${k}: ${v}`).join(' | ');
+    para(`${n.confidence.reasons.slice(0, 3).join(' · ')}${meta ? ` — ${meta}` : ''}${n.url ? ` — ${n.url}` : ''}`, 8, [71, 85, 105], 3, 3.9);
+    y += 1.5;
+  }
+
+  heading(`4. Línea de tiempo (${osintCase.timeline.length})`);
+  for (const ev of osintCase.timeline) para(`${ev.date} — ${ev.title} (${ev.sourcePlatform}). ${ev.description}`, 8.5);
+
+  heading(`5. Ubicaciones (${osintCase.locations.length}) y comprobaciones manuales`);
+  for (const loc of osintCase.locations) para(`• ${loc.title} [${loc.lat.toFixed(3)}, ${loc.lng.toFixed(3)}]: ${loc.subtitle}`, 8.5);
+  const pending = osintCase.manualTasks.filter((t) => t.status === 'pending');
+  const done = osintCase.manualTasks.filter((t) => t.status !== 'pending');
+  for (const t of done) para(`• ${t.status === 'verified_hit' ? 'ENCONTRADO' : 'DESCARTADO'} — ${t.platform}: ${t.url}`, 8.5, [180, 83, 9]);
+  para(`${pending.length} comprobaciones manuales sin revisar.`, 8.5, [180, 83, 9]);
+
+  heading('Integridad');
+  para(`El SHA-256 de la cabecera corresponde al archivo ${jsonName(osintCase)} que genera «Exportar JSON» en este mismo estado del caso. Compruébalo con: sha256sum ${jsonName(osintCase)} (Linux/macOS) o Get-FileHash ${jsonName(osintCase)} (Windows).`, 8.5);
+
+  doc.save(`Informe_OSINT_${fileSafe(osintCase.seedQuery)}_${new Date().toISOString().slice(0, 10)}.pdf`);
+}
+
+const esc = (str: unknown) =>
+  String(str ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+
+/** Informe HTML autónomo (sin scripts) con el SHA-256 del JSON del caso. */
+export async function buildCaseHtml(osintCase: InvestigationCase): Promise<string> {
+  const sha256 = await caseSha256(osintCase);
+  const sorted = [...osintCase.nodes].sort((a, b) => Number(!!b.evidence) - Number(!!a.evidence) || b.confidence.total - a.confidence.total);
+  const cls = (t: number) => (t >= 75 ? 'hi' : t >= 40 ? 'mid' : 'lo');
+  const link = (u?: string) => {
+    const s = safeHttpUrl(u);
+    return s ? `<br><a href="${esc(s)}" rel="noopener noreferrer">${esc(s)}</a>` : '';
+  };
+  return `<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'">
+<title>Informe OSINT — ${esc(osintCase.name)}</title>
+<style>
+body{margin:0;padding:28px 18px;background:#0b1220;color:#e2e8f0;font:14px/1.55 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+main{max-width:1100px;margin:0 auto}h1{font-size:21px;margin:0 0 4px}h2{font-size:16px;border-bottom:1px solid #1e293b;padding-bottom:8px}
+section,header{background:#0f172a;border:1px solid #1e293b;border-radius:10px;padding:20px;margin-bottom:18px;overflow-x:auto}
+.hash{font:12px ui-monospace,Consolas,monospace;color:#34d399;word-break:break-all}.muted{color:#94a3b8;font-size:12.5px}
+table{width:100%;border-collapse:collapse;font-size:13px}th,td{text-align:left;padding:8px 10px;border-bottom:1px solid #1e293b;vertical-align:top;overflow-wrap:anywhere}td:last-child{min-width:18rem}
+th{color:#94a3b8}.hi{color:#4ade80}.mid{color:#fbbf24}.lo{color:#f87171}td.s{font:700 13px ui-monospace,monospace;white-space:nowrap}a{color:#60a5fa;word-break:break-all}
+pre{white-space:pre-wrap;background:#020617;padding:14px;border-radius:8px}.demo{color:#fca5a5;font-weight:700}
+@media print{body{background:#fff;color:#0f172a}section,header,pre{background:#fff;border-color:#cbd5e1}}
+</style>
+</head>
+<body><main>
+<header>
+<h1>${esc(osintCase.name)}</h1>
+${osintCase.isDemo ? '<p class="demo">Caso de ejemplo con datos ficticios.</p>' : ''}
+<div class="muted">Semilla: <strong>${esc(osintCase.seedQuery)}</strong> (${esc(osintCase.seedType)}) · Generado el ${esc(new Date().toLocaleString('es-ES'))} · <a href="https://www.unfantasmaenelsistema.com/">Un Fantasma en el Sistema</a></div>
+<p class="muted">Pistas: ${esc(Object.entries(osintCase.contextHints).filter(([, v]) => v).map(([k, v]) => `${k}: ${v}`).join(' · ') || 'ninguna')}</p>
+<div class="hash">SHA-256 de ${esc(jsonName(osintCase))}: ${sha256}</div>
+<p class="muted">Compruébalo con <code>sha256sum ${esc(jsonName(osintCase))}</code> o <code>Get-FileHash ${esc(jsonName(osintCase))}</code> sobre el JSON exportado en este mismo estado.</p>
+</header>
+${osintCase.aiSummary ? `<section><h2>Resumen</h2><pre>${esc(osintCase.aiSummary)}</pre></section>` : ''}
+<section><h2>Hallazgos (${sorted.length})</h2>
+<table><thead><tr><th>Puntuación</th><th>Hallazgo</th><th>Fuente</th><th>Clasificación</th><th>Motivos y datos</th></tr></thead><tbody>
+${sorted
+  .map(
+    (n) => `<tr><td class="s ${n.evidence ? cls(n.confidence.total) : ''}">${n.confidence.total}/100</td><td><strong>${esc(n.label)}</strong><br><span class="muted">${esc(n.subtitle)}</span>${link(n.url)}</td><td>${esc(n.platform)}<br><span class="muted">${esc(n.category)}</span></td><td>${esc(classify(n))}</td><td>${esc(n.confidence.reasons.join(' · '))}<br><span class="muted">${esc(Object.entries(n.metadata).map(([k, v]) => `${k}: ${v}`).join(' | '))}</span></td></tr>`
+  )
+  .join('\n')}
+</tbody></table></section>
+<section><h2>Línea de tiempo (${osintCase.timeline.length})</h2>
+<table><thead><tr><th>Fecha</th><th>Hito</th><th>Fuente</th><th>Detalle</th></tr></thead><tbody>
+${osintCase.timeline.map((t) => `<tr><td class="s">${esc(t.date)}</td><td><strong>${esc(t.title)}</strong></td><td>${esc(t.sourcePlatform)}</td><td>${esc(t.description)}</td></tr>`).join('\n')}
+</tbody></table></section>
+<section><h2>Comprobaciones manuales (${osintCase.manualTasks.length})</h2>
+<table><thead><tr><th>Estado</th><th>Sitio</th><th>Enlace</th><th>Nota</th></tr></thead><tbody>
+${osintCase.manualTasks.map((t) => `<tr><td>${t.status === 'verified_hit' ? 'Encontrado' : t.status === 'discarded' ? 'Descartado' : 'Pendiente'}</td><td>${esc(t.platform)}</td><td>${link(t.url)}</td><td>${esc(t.notes)}</td></tr>`).join('\n')}
+</tbody></table></section>
+</main></body></html>
+`;
+}
+
+export async function exportCaseToHtml(osintCase: InvestigationCase): Promise<void> {
+  downloadText(await buildCaseHtml(osintCase), `Informe_OSINT_${fileSafe(osintCase.seedQuery)}.html`, 'text/html;charset=utf-8');
+}
+
+/** JSON del caso: exactamente el texto sobre el que se calcula el SHA-256. */
+export async function exportCaseToJson(osintCase: InvestigationCase): Promise<string> {
+  const text = canonicalCaseJson(osintCase);
+  downloadText(text, jsonName(osintCase), 'application/json');
+  return sha256Hex(text);
+}
+
+export function exportCaseToStix21(osintCase: InvestigationCase): void {
+  downloadText(JSON.stringify(buildStixBundle(osintCase), null, 2), `STIX21_${fileSafe(osintCase.seedQuery)}.stix.json`, 'application/json');
+}
+
+/** Aristas Origen → Relación → Destino para Maltego y Gephi (celdas protegidas contra fórmulas). */
+export function buildMaltegoCsv(osintCase: InvestigationCase): string {
+  const rows = ['Source_Entity,Target_Entity,Relationship,Target_Type,Platform,Confidence_Score,Classification,URL'];
+  const byId = new Map(osintCase.nodes.map((n) => [n.id, n]));
+  for (const e of osintCase.edges) {
+    const s = byId.get(e.source);
+    const t = byId.get(e.target);
+    if (!s || !t) continue;
+    rows.push([csvCell(s.label), csvCell(t.label), csvCell(e.relation), csvCell(t.type), csvCell(t.platform), t.confidence.total, csvCell(classify(t)), csvCell(t.url || '')].join(','));
+  }
+  return rows.join('\n') + '\n';
+}
+
+export function exportCaseToMaltegoCsv(osintCase: InvestigationCase): void {
+  downloadText('﻿' + buildMaltegoCsv(osintCase), `Maltego_Gephi_${fileSafe(osintCase.seedQuery)}.csv`, 'text/csv;charset=utf-8');
 }

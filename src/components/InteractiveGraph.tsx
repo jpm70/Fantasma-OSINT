@@ -1,4 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
+import { BAND_LABEL, identityBand } from '../services/aliasAndConfidenceEngine';
+import { safeHttpUrl } from '../engine/integrity';
 import {
   ClusterGroupMode,
   EntityType,
@@ -44,23 +46,26 @@ interface SimNode extends GraphNode {
 }
 
 const TYPE_COLOR_MAP: Record<EntityType, { fill: string; stroke: string; label: string }> = {
-  seed: { fill: '#ef4444', stroke: '#fca5a5', label: 'Semilla Principal' },
-  username: { fill: '#3b82f6', stroke: '#93c5fd', label: 'Nombre de Usuario' },
-  social_profile: { fill: '#0ea5e9', stroke: '#7dd3fc', label: 'Perfil Social' },
-  alias_variant: { fill: '#8b5cf6', stroke: '#c4b5fd', label: 'Familia de Alias' },
-  email: { fill: '#f59e0b', stroke: '#fde68a', label: 'Correo Electrónico' },
-  breach: { fill: '#dc2626', stroke: '#fca5a5', label: 'Brecha de Datos' },
-  domain: { fill: '#10b981', stroke: '#6ee7b7', label: 'Dominio Web' },
+  seed: { fill: '#ef4444', stroke: '#fca5a5', label: 'Semilla' },
+  username: { fill: '#3b82f6', stroke: '#93c5fd', label: 'Usuario' },
+  social_profile: { fill: '#0ea5e9', stroke: '#7dd3fc', label: 'Perfil' },
+  alias_variant: { fill: '#8b5cf6', stroke: '#c4b5fd', label: 'Variante de alias' },
+  email: { fill: '#f59e0b', stroke: '#fde68a', label: 'Correo' },
+  breach: { fill: '#dc2626', stroke: '#fca5a5', label: 'Brecha' },
+  domain: { fill: '#10b981', stroke: '#6ee7b7', label: 'Dominio' },
   subdomain: { fill: '#14b8a6', stroke: '#5eead4', label: 'Subdominio (crt.sh)' },
   dns_record: { fill: '#06b6d4', stroke: '#67e8f9', label: 'Registro DNS' },
   ip: { fill: '#6366f1', stroke: '#a5b4fc', label: 'Dirección IP' },
   port_vuln: { fill: '#ec4899', stroke: '#f9a8d4', label: 'Puertos / Shodan' },
   phone: { fill: '#84cc16', stroke: '#bef264', label: 'Teléfono E.164' },
-  real_name: { fill: '#eab308', stroke: '#fef08a', label: 'Nombre Real' },
+  real_name: { fill: '#eab308', stroke: '#fef08a', label: 'Nombre' },
   national_id: { fill: '#f97316', stroke: '#fdba74', label: 'ID Nacional / DNI' },
-  location: { fill: '#22c55e', stroke: '#86efac', label: 'Ubicación Geo' },
+  location: { fill: '#22c55e', stroke: '#86efac', label: 'Ubicación' },
   dork_query: { fill: '#64748b', stroke: '#cbd5e1', label: 'Dork / Búsqueda' },
+  evidence_file: { fill: '#a855f7', stroke: '#d8b4fe', label: 'Archivo / evidencia' },
 };
+
+const isIdentity = (n: { evidence?: unknown; confidence: { basis?: string } }) => !!n.evidence || n.confidence.basis === 'identity';
 
 const BUBBLE_PALETTE = [
   { bg: 'rgba(59, 130, 246, 0.09)', border: 'rgba(96, 165, 250, 0.45)', text: '#93c5fd' },
@@ -121,10 +126,10 @@ export const InteractiveGraph: React.FC<InteractiveGraphProps> = ({
   const filteredEdges = edges.filter((e) => visibleIds.has(e.source) && visibleIds.has(e.target));
 
   const getGroupKey = (n: GraphNode, mode: ClusterGroupMode): string => {
-    if (mode === 'none') return 'Grafo General';
+    if (mode === 'none') return 'Todos';
     if (mode === 'type') return TYPE_COLOR_MAP[n.type]?.label || n.category;
     if (mode === 'platform') return n.platform || 'General';
-    if (mode === 'alias_family') return n.aliasFamily || 'Raíz Exacta';
+    if (mode === 'alias_family') return n.aliasFamily || 'Raíz exacta';
     return 'General';
   };
 
@@ -346,13 +351,14 @@ export const InteractiveGraph: React.FC<InteractiveGraphProps> = ({
         ctx.beginPath();
         ctx.moveTo(s.x, s.y);
         ctx.lineTo(t.x, t.y);
+        const weakIdentity = isIdentity(t) && t.confidence.total < 40;
         ctx.strokeStyle = isSelectedEdge
           ? 'rgba(248, 113, 113, 0.85)'
-          : t.confidence.total < 50
+          : weakIdentity
           ? 'rgba(248, 113, 113, 0.35)'
           : 'rgba(148, 163, 184, 0.32)';
         ctx.lineWidth = isSelectedEdge ? 2.2 : 1.3;
-        if (t.confidence.total < 50) {
+        if (weakIdentity) {
           ctx.setLineDash([4, 4]);
         }
         ctx.stroke();
@@ -378,10 +384,13 @@ export const InteractiveGraph: React.FC<InteractiveGraphProps> = ({
         if (isSelected) {
           ctx.strokeStyle = '#f87171';
           ctx.lineWidth = 2.5;
+        } else if (!isIdentity(n)) {
+          ctx.strokeStyle = 'rgba(148, 163, 184, 0.35)';
+          ctx.lineWidth = 1.4;
         } else if (n.confidence.total >= 75) {
           ctx.strokeStyle = 'rgba(34, 197, 94, 0.55)';
           ctx.lineWidth = 2;
-        } else if (n.confidence.total >= 50) {
+        } else if (n.confidence.total >= 40) {
           ctx.strokeStyle = 'rgba(245, 158, 11, 0.55)';
           ctx.lineWidth = 1.8;
         } else {
@@ -406,7 +415,7 @@ export const InteractiveGraph: React.FC<InteractiveGraphProps> = ({
         ctx.fillStyle = '#ffffff';
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
-        ctx.fillText(n.type === 'seed' ? 'SEED' : `${n.confidence.total}%`, n.x, n.y);
+        ctx.fillText(n.type === 'seed' ? (n.subtitle?.startsWith('Pivote') ? 'PIVOTE' : 'INICIO') : isIdentity(n) ? `${n.confidence.total}%` : '', n.x, n.y);
 
         // Node Title Label below
         ctx.font = '600 11.5px "Plus Jakarta Sans", sans-serif';
@@ -439,7 +448,8 @@ export const InteractiveGraph: React.FC<InteractiveGraphProps> = ({
     return { wx, wy };
   };
 
-  const handleMouseDown = (e: React.MouseEvent<HTMLCanvasElement>) => {
+  const handleMouseDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    e.currentTarget.setPointerCapture?.(e.pointerId);
     const { wx, wy } = screenToWorld(e.clientX, e.clientY);
     const clicked = [...simNodesRef.current]
       .reverse()
@@ -458,7 +468,7 @@ export const InteractiveGraph: React.FC<InteractiveGraphProps> = ({
     }
   };
 
-  const handleMouseMove = (e: React.MouseEvent<HTMLCanvasElement>) => {
+  const handleMouseMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
     if (draggingNodeRef.current) {
       const { wx, wy } = screenToWorld(e.clientX, e.clientY);
       draggingNodeRef.current.x = wx;
@@ -475,13 +485,19 @@ export const InteractiveGraph: React.FC<InteractiveGraphProps> = ({
     isPanningRef.current = false;
   };
 
-  const handleWheel = (e: React.WheelEvent<HTMLCanvasElement>) => {
-    e.preventDefault();
-    const factor = e.deltaY < 0 ? 1.1 : 0.9;
-    const nextScale = Math.min(2.4, Math.max(0.45, transformRef.current.scale * factor));
-    transformRef.current.scale = nextScale;
-    setTick((t) => t + 1);
-  };
+  // La rueda hace zoom sin desplazar la página: hace falta un listener no pasivo
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const onWheel = (e: WheelEvent) => {
+      e.preventDefault();
+      const factor = e.deltaY < 0 ? 1.1 : 0.9;
+      transformRef.current.scale = Math.min(2.4, Math.max(0.45, transformRef.current.scale * factor));
+      setTick((t) => t + 1);
+    };
+    canvas.addEventListener('wheel', onWheel, { passive: false });
+    return () => canvas.removeEventListener('wheel', onWheel);
+  }, []);
 
   const handleResetView = () => {
     transformRef.current = { x: 0, y: 0, scale: 1 };
@@ -501,36 +517,25 @@ export const InteractiveGraph: React.FC<InteractiveGraphProps> = ({
     a.click();
   };
 
-  const inferPivotType = (node: GraphNode): { query: string; type: InputType } => {
-    if (node.type === 'domain' || node.type === 'subdomain') {
-      return { query: node.label.replace(/^RDAP:\s*/i, ''), type: 'domain' };
-    }
-    if (node.type === 'ip') return { query: node.label, type: 'ip' };
-    if (node.type === 'email') return { query: node.label, type: 'email' };
-    if (node.type === 'phone') return { query: String(node.metadata.formatoE164 || node.label), type: 'phone' };
-    const clean = node.label.includes(':') ? node.label.split(':').pop()!.trim() : node.label;
-    return { query: clean, type: 'username' };
-  };
-
   return (
-    <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 h-[640px]">
+    <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 lg:h-[640px]">
       {/* Main Interactive Graph Viewport */}
       <div
         ref={containerRef}
-        className="lg:col-span-8 xl:col-span-9 relative bg-slate-950 border border-slate-800 rounded-xl overflow-hidden flex flex-col"
+        className="lg:col-span-8 xl:col-span-9 relative bg-slate-950 border border-slate-800 rounded-xl overflow-hidden flex flex-col h-[520px] lg:h-auto min-w-0"
       >
         {/* Top Graph Toolbar: Bubble Clustering & Filters */}
         <div className="z-10 flex flex-wrap items-center justify-between gap-3 px-4 py-3 bg-slate-900/95 border-b border-slate-800">
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2 min-w-0">
             <Layers className="w-4 h-4 text-red-400 shrink-0" />
-            <span className="text-xs font-medium text-slate-300 whitespace-nowrap">Agrupar en Burbujas:</span>
-            <div className="flex items-center gap-1 p-1 bg-slate-950 border border-slate-800 rounded-lg">
+            <span className="text-xs font-medium text-slate-300 whitespace-nowrap">Agrupar:</span>
+            <div className="flex flex-wrap items-center gap-1 p-1 bg-slate-950 border border-slate-800 rounded-lg">
               {(
                 [
-                  { id: 'type', label: 'Por Tipo' },
-                  { id: 'platform', label: 'Por Plataforma' },
-                  { id: 'alias_family', label: 'Por Familia de Alias' },
-                  { id: 'none', label: 'Sin Agrupar' },
+                  { id: 'type', label: 'Tipo' },
+                  { id: 'platform', label: 'Plataforma' },
+                  { id: 'alias_family', label: 'Familia de alias' },
+                  { id: 'none', label: 'Sin agrupar' },
                 ] as Array<{ id: ClusterGroupMode; label: string }>
               ).map((tab) => (
                 <button
@@ -548,11 +553,11 @@ export const InteractiveGraph: React.FC<InteractiveGraphProps> = ({
             </div>
           </div>
 
-          <div className="flex items-center gap-3">
+          <div className="flex flex-wrap items-center gap-3 min-w-0">
             {/* Confidence Score Filter */}
             <div className="flex items-center gap-2 text-xs text-slate-300">
               <Filter className="w-3.5 h-3.5 text-slate-400" />
-              <span className="whitespace-nowrap">Score Mín:</span>
+              <span className="whitespace-nowrap">Mínimo:</span>
               <input
                 type="range"
                 min={0}
@@ -560,6 +565,7 @@ export const InteractiveGraph: React.FC<InteractiveGraphProps> = ({
                 step={10}
                 value={minConfidence}
                 onChange={(e) => setMinConfidence(Number(e.target.value))}
+                aria-label="Puntuación mínima"
                 className="w-20 accent-red-500 cursor-pointer"
               />
               <span className="font-mono tabular-nums text-slate-200 w-8">{minConfidence}%</span>
@@ -572,17 +578,32 @@ export const InteractiveGraph: React.FC<InteractiveGraphProps> = ({
                 type="text"
                 value={searchFilter}
                 onChange={(e) => setSearchFilter(e.target.value)}
-                placeholder="Filtrar nodo..."
+                placeholder="Filtrar nodo…"
+                aria-label="Filtrar nodos"
                 className="pl-8 pr-3 py-1 text-xs bg-slate-950 border border-slate-800 rounded-lg text-slate-200 placeholder:text-slate-500 focus:outline-none focus:border-red-500 w-36"
               />
             </div>
 
+            <label htmlFor="node-picker" className="sr-only">Seleccionar un nodo</label>
+            <select
+              id="node-picker"
+              value={selectedNode?.id ?? ''}
+              onChange={(e) => onSelectNode(filteredNodes.find((n) => n.id === e.target.value) ?? null)}
+              className="px-2 py-1 text-xs bg-slate-950 border border-slate-800 rounded-lg text-slate-200 max-w-[11rem]"
+            >
+              <option value="">Elegir nodo…</option>
+              {filteredNodes.map((n) => (
+                <option key={n.id} value={n.id}>
+                  {n.label}
+                </option>
+              ))}
+            </select>
             <button
               onClick={() => setShowAddModal(true)}
               className="flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg transition-colors whitespace-nowrap shrink-0"
             >
               <Plus className="w-3.5 h-3.5" />
-              Añadir Nodo
+              Añadir nodo
             </button>
           </div>
         </div>
@@ -591,12 +612,13 @@ export const InteractiveGraph: React.FC<InteractiveGraphProps> = ({
         <div className="relative flex-1 w-full h-full">
           <canvas
             ref={canvasRef}
-            onMouseDown={handleMouseDown}
-            onMouseMove={handleMouseMove}
-            onMouseUp={handleMouseUp}
-            onMouseLeave={handleMouseUp}
-            onWheel={handleWheel}
-            className="w-full h-full cursor-grab active:cursor-grabbing block"
+            onPointerDown={handleMouseDown}
+            onPointerMove={handleMouseMove}
+            onPointerUp={handleMouseUp}
+            onPointerCancel={handleMouseUp}
+            role="img"
+            aria-label={`Grafo con ${filteredNodes.length} nodos y ${filteredEdges.length} relaciones. Selecciona un nodo para ver sus datos en el inspector.`}
+            className="w-full h-full cursor-grab active:cursor-grabbing block touch-none"
           />
 
           {/* Floating Zoom & Export Controls */}
@@ -623,14 +645,14 @@ export const InteractiveGraph: React.FC<InteractiveGraphProps> = ({
             </button>
             <button
               onClick={handleResetView}
-              title="Centrar y Liberar Nodos"
+              title="Centrar y soltar los nodos"
               className="p-1.5 text-slate-300 hover:text-white hover:bg-slate-800 rounded transition-colors"
             >
               <Maximize2 className="w-4 h-4" />
             </button>
             <button
               onClick={handleExportGraphPng}
-              title="Exportar Captura del Grafo (PNG)"
+              title="Descargar el grafo como imagen (PNG)"
               className="flex items-center gap-1 px-2 py-1 text-xs font-medium text-slate-300 hover:text-white hover:bg-slate-800 rounded transition-colors whitespace-nowrap"
             >
               <Download className="w-3.5 h-3.5" />
@@ -640,10 +662,10 @@ export const InteractiveGraph: React.FC<InteractiveGraphProps> = ({
 
           {/* Legend */}
           <div className="absolute bottom-4 right-4 hidden sm:flex items-center gap-4 px-3 py-2 bg-slate-900/90 border border-slate-800 rounded-lg text-xs text-slate-300">
-            <span className="text-slate-400">Halo Confianza:</span>
-            <span className="text-emerald-400 font-mono">≥75% Real</span>
-            <span className="text-amber-400 font-mono">50–74% Medio</span>
-            <span className="text-red-400 font-mono">&lt;50% Homónimo</span>
+            <span className="text-slate-400">Perfiles:</span>
+            <span className="text-emerald-400 font-mono">≥75 corroborado</span>
+            <span className="text-amber-400 font-mono">40–74 sin corroborar</span>
+            <span className="text-red-400 font-mono">&lt;40 homónimo</span>
           </div>
         </div>
 
@@ -651,7 +673,7 @@ export const InteractiveGraph: React.FC<InteractiveGraphProps> = ({
         {showAddModal && (
           <div className="absolute inset-0 z-30 bg-slate-950/80 flex items-center justify-center p-4">
             <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 w-full max-w-md space-y-4">
-              <h3 className="text-base font-semibold text-white">Añadir Evidencia Manual al Grafo</h3>
+              <h3 className="text-base font-semibold text-white">Añadir una evidencia al grafo</h3>
               <div className="space-y-3">
                 <div>
                   <label className="block text-xs text-slate-400 mb-1">Identificador / Valor del Nodo</label>
@@ -665,18 +687,18 @@ export const InteractiveGraph: React.FC<InteractiveGraphProps> = ({
                 </div>
                 <div className="grid grid-cols-2 gap-3">
                   <div>
-                    <label className="block text-xs text-slate-400 mb-1">Tipo de Entidad</label>
+                    <label className="block text-xs text-slate-400 mb-1">Tipo</label>
                     <select
                       value={newNodeType}
                       onChange={(e) => setNewNodeType(e.target.value as EntityType)}
                       className="w-full px-3 py-2 text-sm bg-slate-950 border border-slate-800 rounded-lg text-white"
                     >
-                      <option value="social_profile">Perfil Social</option>
-                      <option value="domain">Dominio Web</option>
+                      <option value="social_profile">Perfil</option>
+                      <option value="domain">Dominio</option>
                       <option value="ip">Dirección IP</option>
-                      <option value="email">Correo Electrónico</option>
+                      <option value="email">Correo</option>
                       <option value="phone">Teléfono</option>
-                      <option value="alias_variant">Alias Relacionado</option>
+                      <option value="alias_variant">Alias relacionado</option>
                     </select>
                   </div>
                   <div>
@@ -725,7 +747,7 @@ export const InteractiveGraph: React.FC<InteractiveGraphProps> = ({
       </div>
 
       {/* Right Node Inspector & Confidence Breakdown Panel */}
-      <div className="lg:col-span-4 xl:col-span-3 bg-slate-900 border border-slate-800 rounded-xl p-4 flex flex-col justify-between overflow-y-auto">
+      <div className="lg:col-span-4 xl:col-span-3 bg-slate-900 border border-slate-800 rounded-xl p-4 flex flex-col justify-between overflow-y-auto max-h-[640px] min-w-0" aria-live="polite">
         {selectedNode ? (
           <div className="space-y-4">
             <div className="border-b border-slate-800 pb-3">
@@ -738,83 +760,73 @@ export const InteractiveGraph: React.FC<InteractiveGraphProps> = ({
               )}
             </div>
 
-            {/* Confidence Score Breakdown (0-100) */}
-            <div className="bg-slate-950 border border-slate-800 rounded-lg p-3 space-y-2.5">
-              <div className="flex items-center justify-between">
-                <span className="text-xs font-medium text-slate-300">Puntuación de Confianza</span>
-                <span
-                  className={`text-sm font-mono font-bold tabular-nums ${
-                    selectedNode.confidence.total >= 75
-                      ? 'text-emerald-400'
-                      : selectedNode.confidence.total >= 50
-                      ? 'text-amber-400'
-                      : 'text-red-400'
-                  }`}
-                >
-                  {selectedNode.confidence.total} / 100
-                </span>
+            {isIdentity(selectedNode) ? (
+              <div className="bg-slate-950 border border-slate-800 rounded-lg p-3 space-y-2.5">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-xs font-medium text-slate-300">¿Es la misma persona?</span>
+                  <span className={`text-sm font-mono font-bold tabular-nums ${selectedNode.confidence.total >= 75 ? 'text-emerald-400' : selectedNode.confidence.total >= 40 ? 'text-amber-400' : 'text-red-400'}`}>
+                    {selectedNode.confidence.total} / 100
+                  </span>
+                </div>
+                <div className="w-full h-1.5 bg-slate-800 rounded-full overflow-hidden">
+                  <div className={`h-full ${selectedNode.confidence.total >= 75 ? 'bg-emerald-500' : selectedNode.confidence.total >= 40 ? 'bg-amber-500' : 'bg-red-500'}`} style={{ width: `${selectedNode.confidence.total}%` }} />
+                </div>
+                <div className="text-xs text-slate-300">{BAND_LABEL[identityBand(selectedNode.confidence.total)]}</div>
+                <div className="grid grid-cols-2 gap-1.5 text-[11px] text-slate-400 font-mono pt-1">
+                  <div>Alias: {selectedNode.confidence.handleMatch}/30</div>
+                  <div>Familia: {selectedNode.confidence.aliasSimilarity}/20</div>
+                  <div>Nombre: {selectedNode.confidence.bioNameMatch}/20</div>
+                  <div>Ubicación: {selectedNode.confidence.geoMatch}/15</div>
+                  <div>Web: {selectedNode.confidence.avatarDomainMatch}/15</div>
+                  <div className={selectedNode.confidence.penalty ? 'text-red-400' : ''}>Resta: {selectedNode.confidence.penalty ? `−${selectedNode.confidence.penalty}` : '0'}</div>
+                </div>
+                <ul className="space-y-1 pt-1 border-t border-slate-800/80">
+                  {selectedNode.confidence.reasons.map((r, i) => (
+                    <li key={i} className="text-[11px] text-slate-300 leading-relaxed">• {r}</li>
+                  ))}
+                </ul>
               </div>
-              <div className="w-full h-1.5 bg-slate-800 rounded-full overflow-hidden">
-                <div
-                  className={`h-full ${
-                    selectedNode.confidence.total >= 75
-                      ? 'bg-emerald-500'
-                      : selectedNode.confidence.total >= 50
-                      ? 'bg-amber-500'
-                      : 'bg-red-500'
-                  }`}
-                  style={{ width: `${selectedNode.confidence.total}%` }}
-                />
-              </div>
-
-              <div className="grid grid-cols-2 gap-1.5 text-[11px] text-slate-400 font-mono pt-1">
-                <div>Handle: {selectedNode.confidence.handleMatch}/30</div>
-                <div>Alias: {selectedNode.confidence.aliasSimilarity}/20</div>
-                <div>Bio/Nombre: {selectedNode.confidence.bioNameMatch}/20</div>
-                <div>Geo/Dominio: {selectedNode.confidence.geoMatch + selectedNode.confidence.avatarDomainMatch}/30</div>
-              </div>
-
-              <div className="space-y-1 pt-1 border-t border-slate-800/80">
+            ) : (
+              <div className="bg-slate-950 border border-slate-800 rounded-lg p-3 space-y-1.5">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-xs font-medium text-slate-300">Fiabilidad de la fuente</span>
+                  <span className="text-sm font-mono font-bold tabular-nums text-slate-200">{selectedNode.confidence.total} / 100</span>
+                </div>
+                <p className="text-[11px] text-slate-400">Dato técnico: no mide si algo pertenece a una persona.</p>
                 {selectedNode.confidence.reasons.map((r, i) => (
-                  <p key={i} className="text-[11px] text-slate-300 leading-relaxed">
-                    • {r}
-                  </p>
+                  <p key={i} className="text-[11px] text-slate-300">• {r}</p>
                 ))}
               </div>
-            </div>
+            )}
 
-            {/* Verification Status Controls */}
-            <div className="space-y-1.5">
-              <span className="text-xs font-medium text-slate-400 block">Clasificación del Analista</span>
-              <div className="grid grid-cols-2 gap-2">
-                <button
-                  onClick={() => onUpdateNodeStatus(selectedNode.id, 'verified')}
-                  className={`flex items-center justify-center gap-1.5 py-1.5 px-2 rounded-lg text-xs font-medium border transition-colors whitespace-nowrap ${
-                    selectedNode.verifiedStatus === 'verified'
-                      ? 'bg-emerald-950/60 border-emerald-500/60 text-emerald-300'
-                      : 'bg-slate-950 border-slate-800 text-slate-400 hover:text-slate-200'
-                  }`}
-                >
-                  <CheckCircle2 className="w-3.5 h-3.5" />
-                  Perfil Real
-                </button>
-                <button
-                  onClick={() => onUpdateNodeStatus(selectedNode.id, 'false_positive')}
-                  className={`flex items-center justify-center gap-1.5 py-1.5 px-2 rounded-lg text-xs font-medium border transition-colors whitespace-nowrap ${
-                    selectedNode.verifiedStatus === 'false_positive'
-                      ? 'bg-red-950/60 border-red-500/60 text-red-300'
-                      : 'bg-slate-950 border-slate-800 text-slate-400 hover:text-slate-200'
-                  }`}
-                >
-                  <XCircle className="w-3.5 h-3.5" />
-                  Homónimo
-                </button>
+            {selectedNode.evidence && (
+              <div className="space-y-1.5">
+                <span className="text-xs font-medium text-slate-400 block">Veredicto del analista {selectedNode.analystReviewed ? '' : '(sin revisar)'}</span>
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    onClick={() => onUpdateNodeStatus(selectedNode.id, 'verified')}
+                    aria-pressed={selectedNode.analystReviewed && selectedNode.verifiedStatus === 'verified'}
+                    className={`flex items-center justify-center gap-1.5 py-1.5 px-2 rounded-lg text-xs font-medium border transition-colors whitespace-nowrap ${selectedNode.analystReviewed && selectedNode.verifiedStatus === 'verified' ? 'bg-emerald-950/60 border-emerald-500/60 text-emerald-300' : 'bg-slate-950 border-slate-800 text-slate-400 hover:text-slate-200'}`}
+                  >
+                    <CheckCircle2 className="w-3.5 h-3.5" />
+                    Es la persona
+                  </button>
+                  <button
+                    onClick={() => onUpdateNodeStatus(selectedNode.id, 'false_positive')}
+                    aria-pressed={selectedNode.analystReviewed && selectedNode.verifiedStatus === 'false_positive'}
+                    className={`flex items-center justify-center gap-1.5 py-1.5 px-2 rounded-lg text-xs font-medium border transition-colors whitespace-nowrap ${selectedNode.analystReviewed && selectedNode.verifiedStatus === 'false_positive' ? 'bg-red-950/60 border-red-500/60 text-red-300' : 'bg-slate-950 border-slate-800 text-slate-400 hover:text-slate-200'}`}
+                  >
+                    <XCircle className="w-3.5 h-3.5" />
+                    Homónimo
+                  </button>
+                </div>
+                <p className="text-[11px] text-slate-500">El veredicto no cambia la puntuación: esta sigue mostrando lo que dicen las pruebas.</p>
               </div>
-            </div>
+            )}
 
             {/* Metadata Key-Value Table */}
             <div className="space-y-1.5">
-              <span className="text-xs font-medium text-slate-400 block">Atributos y Metadatos Técnicos</span>
+              <span className="text-xs font-medium text-slate-400 block">Datos</span>
               <div className="bg-slate-950 border border-slate-800 rounded-lg divide-y divide-slate-800/70">
                 {Object.entries(selectedNode.metadata).map(([k, v]) => (
                   <div key={k} className="px-3 py-1.5 flex justify-between gap-3 text-xs">
@@ -829,7 +841,7 @@ export const InteractiveGraph: React.FC<InteractiveGraphProps> = ({
             <div className="space-y-2 pt-2">
               {selectedNode.url && (
                 <a
-                  href={selectedNode.url}
+                  href={safeHttpUrl(selectedNode.url)}
                   target="_blank"
                   rel="noopener noreferrer"
                   className="w-full flex items-center justify-center gap-2 py-2 px-3 text-xs font-medium bg-slate-800 hover:bg-slate-700 text-slate-100 rounded-lg transition-colors"
@@ -839,16 +851,13 @@ export const InteractiveGraph: React.FC<InteractiveGraphProps> = ({
                 </a>
               )}
 
-              {selectedNode.type !== 'seed' && (
+              {selectedNode.type !== 'seed' && selectedNode.pivot && (
                 <button
-                  onClick={() => {
-                    const pivot = inferPivotType(selectedNode);
-                    onPivotFromNode(pivot.query, pivot.type);
-                  }}
+                  onClick={() => onPivotFromNode(selectedNode.pivot!.query, selectedNode.pivot!.type)}
                   className="w-full flex items-center justify-center gap-2 py-2 px-3 text-xs font-medium bg-red-600 hover:bg-red-500 text-white rounded-lg transition-colors"
                 >
                   <RefreshCw className="w-3.5 h-3.5" />
-                  Pivotar Investigación desde Nodo
+                  Investigar «{selectedNode.pivot.query}»
                 </button>
               )}
             </div>
@@ -857,22 +866,22 @@ export const InteractiveGraph: React.FC<InteractiveGraphProps> = ({
           <div className="h-full flex flex-col items-center justify-center text-center p-4 space-y-3">
             <Target className="w-8 h-8 text-slate-500" />
             <div className="space-y-1">
-              <h4 className="text-sm font-semibold text-slate-200">Inspector de Evidencias</h4>
+              <h4 className="text-sm font-semibold text-slate-200">Inspector</h4>
               <p className="text-xs text-slate-400 leading-relaxed">
-                Haz clic sobre cualquier nodo del grafo para auditar su Puntuación de Confianza (0–100), verificar si es un perfil real o un homónimo, y pivotar la investigación.
+                Haz clic en un nodo (o elígelo en la lista) para ver de dónde sale, por qué tiene esa puntuación y seguir investigando desde él.
               </p>
             </div>
             <div className="w-full pt-4 border-t border-slate-800 text-left space-y-1.5 text-xs text-slate-400">
               <div className="flex justify-between">
-                <span>Nodos Visibles:</span>
+                <span>Nodos visibles:</span>
                 <span className="font-mono text-slate-200">{filteredNodes.length}</span>
               </div>
               <div className="flex justify-between">
-                <span>Relaciones Activas:</span>
+                <span>Relaciones:</span>
                 <span className="font-mono text-slate-200">{filteredEdges.length}</span>
               </div>
               <div className="flex justify-between">
-                <span>Modo de Agrupación:</span>
+                <span>Agrupación:</span>
                 <span className="font-mono text-red-400">{clusterMode}</span>
               </div>
             </div>

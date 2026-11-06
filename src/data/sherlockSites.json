@@ -18,7 +18,8 @@
     "category": "Foros y Comunidad",
     "urlTemplate": "https://www.reddit.com/user/{username}",
     "probeUrlTemplate": "https://www.reddit.com/user/{username}/about.json",
-    "probeMode": "direct_json"
+    "probeMode": "manual",
+    "manualReason": "Bloquea las peticiones automáticas (403) o exige iniciar sesión."
   },
   {
     "name": "Dev.to",
@@ -66,47 +67,50 @@
     "name": "PyPI",
     "category": "Desarrollo",
     "urlTemplate": "https://pypi.org/user/{username}/",
-    "probeMode": "cors_status",
-    "errorMsg": "404 Not Found"
+    "probeMode": "manual",
+    "manualReason": "Responde 200 aunque el usuario no exista (página genérica o de inicio de sesión)."
   },
   {
     "name": "DockerHub",
     "category": "Desarrollo",
     "urlTemplate": "https://hub.docker.com/u/{username}",
     "probeUrlTemplate": "https://hub.docker.com/v2/users/{username}/",
-    "probeMode": "cors_status"
+    "probeMode": "proxy_status"
   },
   {
     "name": "NPM",
     "category": "Desarrollo",
     "urlTemplate": "https://www.npmjs.com/~{username}",
-    "probeMode": "cors_status",
-    "errorMsg": "Not Found"
+    "probeMode": "manual",
+    "manualReason": "Bloquea las peticiones automáticas (403) o exige iniciar sesión."
   },
   {
     "name": "Instagram",
     "category": "Redes Sociales",
     "urlTemplate": "https://www.instagram.com/{username}/",
-    "probeMode": "cors_status"
+    "probeMode": "manual",
+    "manualReason": "Responde 200 aunque el usuario no exista (página genérica o de inicio de sesión)."
   },
   {
     "name": "TikTok",
     "category": "Redes Sociales",
     "urlTemplate": "https://www.tiktok.com/@{username}",
-    "probeMode": "cors_status"
+    "probeMode": "manual",
+    "manualReason": "Responde 200 aunque el usuario no exista (página genérica o de inicio de sesión)."
   },
   {
     "name": "X (Twitter)",
     "category": "Redes Sociales",
     "urlTemplate": "https://x.com/{username}",
-    "probeMode": "manual_waf"
+    "probeMode": "manual",
+    "manualReason": "Bloquea las peticiones automáticas (403) o exige iniciar sesión."
   },
   {
     "name": "Telegram",
     "category": "Redes Sociales",
     "urlTemplate": "https://t.me/{username}",
-    "probeMode": "cors_status",
-    "errorMsg": "If you have Telegram, you can contact"
+    "probeMode": "manual",
+    "manualReason": "Responde 200 aunque el usuario no exista (página genérica o de inicio de sesión)."
   },
   {
     "name": "Bluesky",
@@ -126,241 +130,260 @@
     "name": "YouTube",
     "category": "Multimedia y Diseño",
     "urlTemplate": "https://www.youtube.com/@{username}",
-    "probeMode": "cors_status"
+    "probeMode": "proxy_status"
   },
   {
     "name": "Twitch",
     "category": "Gaming",
     "urlTemplate": "https://www.twitch.tv/{username}",
-    "probeMode": "cors_status"
+    "probeMode": "manual",
+    "manualReason": "Responde 200 aunque el usuario no exista (página genérica o de inicio de sesión)."
   },
   {
     "name": "Steam Community",
     "category": "Gaming",
     "urlTemplate": "https://steamcommunity.com/id/{username}",
-    "probeMode": "cors_status",
+    "probeMode": "proxy_message",
     "errorMsg": "The specified profile could not be found"
   },
   {
     "name": "Pinterest",
     "category": "Redes Sociales",
     "urlTemplate": "https://www.pinterest.com/{username}/",
-    "probeMode": "cors_status"
+    "probeMode": "manual",
+    "manualReason": "Responde 200 aunque el usuario no exista (página genérica o de inicio de sesión)."
   },
   {
     "name": "Medium",
     "category": "Blogging y Contenido",
     "urlTemplate": "https://medium.com/@{username}",
-    "probeMode": "cors_status"
+    "probeMode": "manual",
+    "manualReason": "Bloquea las peticiones automáticas (403) o exige iniciar sesión."
   },
   {
     "name": "Substack",
     "category": "Blogging y Contenido",
     "urlTemplate": "https://{username}.substack.com",
-    "probeMode": "cors_status"
+    "probeMode": "proxy_status"
   },
   {
     "name": "Linktree",
     "category": "Redes Sociales",
     "urlTemplate": "https://linktr.ee/{username}",
-    "probeMode": "cors_status"
+    "probeMode": "proxy_status"
   },
   {
     "name": "About.me",
     "category": "Profesional y Finanzas",
     "urlTemplate": "https://about.me/{username}",
-    "probeMode": "cors_status"
+    "probeMode": "proxy_status"
   },
   {
     "name": "Gravatar",
     "category": "Profesional y Finanzas",
     "urlTemplate": "https://en.gravatar.com/{username}",
-    "probeMode": "cors_status"
+    "probeMode": "proxy_status"
   },
   {
     "name": "SoundCloud",
     "category": "Multimedia y Diseño",
     "urlTemplate": "https://soundcloud.com/{username}",
-    "probeMode": "cors_status"
+    "probeMode": "proxy_status"
   },
   {
     "name": "Spotify User",
     "category": "Multimedia y Diseño",
     "urlTemplate": "https://open.spotify.com/user/{username}",
-    "probeMode": "cors_status"
+    "probeMode": "manual",
+    "manualReason": "Responde 200 aunque el usuario no exista (página genérica o de inicio de sesión)."
   },
   {
     "name": "Vimeo",
     "category": "Multimedia y Diseño",
     "urlTemplate": "https://vimeo.com/{username}",
-    "probeMode": "cors_status"
+    "probeMode": "proxy_status"
   },
   {
     "name": "Behance",
     "category": "Multimedia y Diseño",
     "urlTemplate": "https://www.behance.net/{username}",
-    "probeMode": "cors_status"
+    "probeMode": "proxy_status"
   },
   {
     "name": "Dribbble",
     "category": "Multimedia y Diseño",
     "urlTemplate": "https://dribbble.com/{username}",
-    "probeMode": "cors_status"
+    "probeMode": "proxy_status"
   },
   {
     "name": "DeviantArt",
     "category": "Multimedia y Diseño",
     "urlTemplate": "https://www.deviantart.com/{username}",
-    "probeMode": "cors_status"
+    "probeMode": "proxy_status"
   },
   {
     "name": "Flickr",
     "category": "Multimedia y Diseño",
     "urlTemplate": "https://www.flickr.com/people/{username}/",
-    "probeMode": "cors_status"
+    "probeMode": "proxy_status"
   },
   {
     "name": "500px",
     "category": "Multimedia y Diseño",
     "urlTemplate": "https://500px.com/p/{username}",
-    "probeMode": "cors_status"
+    "probeMode": "manual",
+    "manualReason": "Responde 200 aunque el usuario no exista (página genérica o de inicio de sesión)."
   },
   {
     "name": "Giphy",
     "category": "Multimedia y Diseño",
     "urlTemplate": "https://giphy.com/{username}",
-    "probeMode": "cors_status"
+    "probeMode": "manual",
+    "manualReason": "Responde 200 aunque el usuario no exista (página genérica o de inicio de sesión)."
   },
   {
     "name": "HackerOne",
     "category": "Ciberseguridad",
     "urlTemplate": "https://hackerone.com/{username}",
-    "probeMode": "cors_status"
+    "probeMode": "proxy_status"
   },
   {
     "name": "BugCrowd",
     "category": "Ciberseguridad",
     "urlTemplate": "https://bugcrowd.com/{username}",
-    "probeMode": "cors_status"
+    "probeMode": "proxy_status"
   },
   {
     "name": "TryHackMe",
     "category": "Ciberseguridad",
     "urlTemplate": "https://tryhackme.com/p/{username}",
-    "probeMode": "cors_status"
+    "probeMode": "manual",
+    "manualReason": "Responde 200 aunque el usuario no exista (página genérica o de inicio de sesión)."
   },
   {
     "name": "HackTheBox Forum",
     "category": "Ciberseguridad",
     "urlTemplate": "https://forum.hackthebox.com/u/{username}",
-    "probeMode": "cors_status"
+    "probeMode": "proxy_status"
   },
   {
     "name": "Pastebin",
     "category": "Ciberseguridad",
     "urlTemplate": "https://pastebin.com/u/{username}",
-    "probeMode": "cors_status"
+    "probeMode": "proxy_status"
   },
   {
     "name": "Codepen",
     "category": "Desarrollo",
     "urlTemplate": "https://codepen.io/{username}",
-    "probeMode": "cors_status"
+    "probeMode": "manual",
+    "manualReason": "Bloquea las peticiones automáticas (403) o exige iniciar sesión."
   },
   {
     "name": "Replit",
     "category": "Desarrollo",
     "urlTemplate": "https://replit.com/@{username}",
-    "probeMode": "cors_status"
+    "probeMode": "proxy_status"
   },
   {
     "name": "Kaggle",
     "category": "Desarrollo",
     "urlTemplate": "https://www.kaggle.com/{username}",
-    "probeMode": "cors_status"
+    "probeMode": "manual",
+    "manualReason": "Responde 200 aunque el usuario no exista (página genérica o de inicio de sesión)."
   },
   {
     "name": "LeetCode",
     "category": "Desarrollo",
     "urlTemplate": "https://leetcode.com/u/{username}/",
-    "probeMode": "cors_status"
+    "probeMode": "manual",
+    "manualReason": "Bloquea las peticiones automáticas (403) o exige iniciar sesión."
   },
   {
     "name": "Bitbucket",
     "category": "Desarrollo",
     "urlTemplate": "https://bitbucket.org/{username}/",
-    "probeMode": "cors_status"
+    "probeMode": "manual",
+    "manualReason": "Bloquea las peticiones automáticas (403) o exige iniciar sesión."
   },
   {
     "name": "SourceForge",
     "category": "Desarrollo",
     "urlTemplate": "https://sourceforge.net/u/{username}/profile/",
-    "probeMode": "cors_status"
+    "probeMode": "manual",
+    "manualReason": "Bloquea las peticiones automáticas (403) o exige iniciar sesión."
   },
   {
     "name": "Patreon",
     "category": "Profesional y Finanzas",
     "urlTemplate": "https://www.patreon.com/{username}",
-    "probeMode": "cors_status"
+    "probeMode": "proxy_status"
   },
   {
     "name": "Kickstarter",
     "category": "Profesional y Finanzas",
     "urlTemplate": "https://www.kickstarter.com/profile/{username}",
-    "probeMode": "cors_status"
+    "probeMode": "manual",
+    "manualReason": "Bloquea las peticiones automáticas (403) o exige iniciar sesión."
   },
   {
     "name": "ProductHunt",
     "category": "Profesional y Finanzas",
     "urlTemplate": "https://www.producthunt.com/@{username}",
-    "probeMode": "cors_status"
+    "probeMode": "manual",
+    "manualReason": "Bloquea las peticiones automáticas (403) o exige iniciar sesión."
   },
   {
     "name": "Gumroad",
     "category": "Profesional y Finanzas",
     "urlTemplate": "https://{username}.gumroad.com",
-    "probeMode": "cors_status"
+    "probeMode": "proxy_status"
   },
   {
     "name": "BuyMeACoffee",
     "category": "Profesional y Finanzas",
     "urlTemplate": "https://www.buymeacoffee.com/{username}",
-    "probeMode": "cors_status"
+    "probeMode": "manual",
+    "manualReason": "Bloquea las peticiones automáticas (403) o exige iniciar sesión."
   },
   {
     "name": "Goodreads",
     "category": "Blogging y Contenido",
     "urlTemplate": "https://www.goodreads.com/{username}",
-    "probeMode": "cors_status"
+    "probeMode": "proxy_status"
   },
   {
     "name": "Wattpad",
     "category": "Blogging y Contenido",
     "urlTemplate": "https://www.wattpad.com/user/{username}",
-    "probeMode": "cors_status"
+    "probeMode": "proxy_status"
   },
   {
     "name": "SlideShare",
     "category": "Profesional y Finanzas",
     "urlTemplate": "https://www.slideshare.net/{username}",
-    "probeMode": "cors_status"
+    "probeMode": "manual",
+    "manualReason": "Responde 200 aunque el usuario no exista (página genérica o de inicio de sesión)."
   },
   {
     "name": "Bandcamp",
     "category": "Multimedia y Diseño",
     "urlTemplate": "https://bandcamp.com/{username}",
-    "probeMode": "cors_status"
+    "probeMode": "manual",
+    "manualReason": "Responde 200 aunque el usuario no exista (página genérica o de inicio de sesión)."
   },
   {
     "name": "Last.fm",
     "category": "Multimedia y Diseño",
     "urlTemplate": "https://www.last.fm/user/{username}",
-    "probeMode": "cors_status"
+    "probeMode": "manual",
+    "manualReason": "Responde 200 aunque el usuario no exista (página genérica o de inicio de sesión)."
   },
   {
     "name": "NameMC (Minecraft)",
     "category": "Gaming",
     "urlTemplate": "https://namemc.com/profile/{username}",
-    "probeMode": "cors_status"
+    "probeMode": "manual",
+    "manualReason": "Bloquea las peticiones automáticas (403) o exige iniciar sesión."
   }
 ]

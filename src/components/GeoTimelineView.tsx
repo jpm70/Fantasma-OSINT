@@ -79,7 +79,7 @@ export const GeoTimelineView: React.FC<GeoTimelineViewProps> = ({
       const color =
         loc.confidence >= 75
           ? '#10b981'
-          : loc.confidence >= 50
+          : loc.confidence >= 40
           ? '#f59e0b'
           : '#ef4444';
 
@@ -92,16 +92,20 @@ export const GeoTimelineView: React.FC<GeoTimelineViewProps> = ({
         fillOpacity: 0.88,
       });
 
-      marker.bindPopup(`
-        <div style="min-width:200px;font-family:'Plus Jakarta Sans',sans-serif;">
-          <div style="font-size:11px;color:#94a3b8;margin-bottom:2px;">${loc.source} · Confianza ${loc.confidence}/100</div>
-          <div style="font-weight:700;font-size:13px;color:#f8fafc;margin-bottom:4px;">${loc.title}</div>
-          <div style="font-size:12px;color:#cbd5e1;margin-bottom:6px;">${loc.subtitle}</div>
-          <div style="font-family:'JetBrains Mono',monospace;font-size:11px;color:#38bdf8;">
-            LAT: ${loc.lat.toFixed(4)} | LNG: ${loc.lng.toFixed(4)}
-          </div>
-        </div>
-      `);
+      // El contenido viene de perfiles y APIs externas: se monta con textContent, nunca como HTML
+      const box = document.createElement('div');
+      box.style.cssText = "min-width:200px;font-family:'Plus Jakarta Sans',sans-serif;";
+      const line = (text: string, css: string) => {
+        const el = document.createElement('div');
+        el.style.cssText = css;
+        el.textContent = text;
+        box.appendChild(el);
+      };
+      line(`${loc.source} · Confianza ${loc.confidence}/100`, 'font-size:11px;color:#94a3b8;margin-bottom:2px;');
+      line(loc.title, 'font-weight:700;font-size:13px;color:#f8fafc;margin-bottom:4px;');
+      line(loc.subtitle, 'font-size:12px;color:#cbd5e1;margin-bottom:6px;');
+      line(`LAT: ${loc.lat.toFixed(4)} | LNG: ${loc.lng.toFixed(4)}`, "font-family:'JetBrains Mono',monospace;font-size:11px;color:#38bdf8;");
+      marker.bindPopup(box);
 
       marker.addTo(layer);
       bounds.push([loc.lat, loc.lng]);
@@ -135,7 +139,7 @@ export const GeoTimelineView: React.FC<GeoTimelineViewProps> = ({
             <div className="flex items-center gap-2">
               <Globe className="w-4 h-4 text-red-400" />
               <h3 className="text-sm font-semibold text-white">
-                Mapa de Inteligencia Geográfica (Leaflet.js)
+                Mapa
               </h3>
             </div>
             <div className="flex items-center gap-3 text-xs text-slate-400">
@@ -145,7 +149,7 @@ export const GeoTimelineView: React.FC<GeoTimelineViewProps> = ({
                 className="flex items-center gap-1 px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg transition-colors whitespace-nowrap"
               >
                 <Plus className="w-3.5 h-3.5" />
-                Añadir Coordenada
+                Añadir ubicación
               </button>
             </div>
           </div>
@@ -155,7 +159,7 @@ export const GeoTimelineView: React.FC<GeoTimelineViewProps> = ({
 
             {showAddLoc && (
               <div className="absolute top-3 right-3 z-[1000] bg-slate-900/95 border border-slate-700 rounded-xl p-4 w-72 space-y-3 shadow-xl">
-                <h4 className="text-xs font-semibold text-white">Nueva Coordenada Manual</h4>
+                <h4 className="text-xs font-semibold text-white">Nueva ubicación manual</h4>
                 <input
                   type="text"
                   value={newTitle}
@@ -199,15 +203,15 @@ export const GeoTimelineView: React.FC<GeoTimelineViewProps> = ({
                     onClick={() => {
                       const lat = parseFloat(newLat);
                       const lng = parseFloat(newLng);
-                      if (!isNaN(lat) && !isNaN(lng) && newTitle.trim()) {
+                      if (Number.isFinite(lat) && Number.isFinite(lng) && Math.abs(lat) <= 90 && Math.abs(lng) <= 180 && newTitle.trim()) {
                         onAddManualLocation({
                           lat,
                           lng,
                           title: newTitle.trim(),
                           subtitle: newSubtitle.trim() || 'Marcador añadido por el analista',
                           category: 'profile_location',
-                          confidence: 90,
-                          source: 'Analista OSINT',
+                          confidence: 100,
+                          source: 'Analista',
                         });
                         setNewTitle('');
                         setNewSubtitle('');
@@ -227,7 +231,7 @@ export const GeoTimelineView: React.FC<GeoTimelineViewProps> = ({
         {/* Geo Locations Sidebar */}
         <div className="lg:col-span-4 bg-slate-900 border border-slate-800 rounded-xl p-4 flex flex-col h-[460px]">
           <div className="flex items-center justify-between pb-3 border-b border-slate-800">
-            <h3 className="text-sm font-semibold text-white">Ubicaciones Detectadas</h3>
+            <h3 className="text-sm font-semibold text-white">Ubicaciones</h3>
             <span className="text-xs text-slate-400 font-mono">{locations.length} puntos</span>
           </div>
 
@@ -271,19 +275,18 @@ export const GeoTimelineView: React.FC<GeoTimelineViewProps> = ({
           <div className="flex items-center gap-2">
             <Calendar className="w-4 h-4 text-red-400" />
             <h3 className="text-base font-semibold text-white">
-              Línea de Tiempo Cronológica de Evidencias ({filteredTimeline.length})
+              Línea de tiempo ({filteredTimeline.length})
             </h3>
           </div>
 
           {/* Interactive Filter Controls */}
           <div className="flex flex-wrap items-center gap-1 p-1 bg-slate-950 border border-slate-800 rounded-lg">
             {[
-              { id: 'all', label: 'Todos los Hitos' },
-              { id: 'account', label: 'Creación Cuentas' },
+              { id: 'all', label: 'Todos' },
+              { id: 'account', label: 'Altas de cuentas' },
               { id: 'domain_whois', label: 'RDAP / WHOIS' },
-              { id: 'certificate', label: 'Certificados crt.sh' },
               { id: 'breach', label: 'Brechas' },
-              { id: 'network', label: 'Red / Shodan' },
+              { id: 'investigation', label: 'Consultas' },
             ].map((tab) => (
               <button
                 key={tab.id}
