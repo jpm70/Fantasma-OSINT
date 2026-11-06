@@ -245,6 +245,9 @@ describe('dominio y correo (fetch simulado)', () => {
     const mail = out.nodes.find((n) => n.type === 'dns_record')!;
     expect(mail.metadata.dmarc).toBe('v=DMARC1; p=reject');
     expect(String(mail.metadata.valoracion)).toMatch(/Protegido/);
+    // La Wayback no responde (sin ruta en el fetch simulado): se avisa y queda para revisar a mano
+    expect(out.logs.some((l) => l.module === 'Wayback Machine' && l.level === 'warning')).toBe(true);
+    expect(out.manualTasks.some((t) => t.platform === 'Wayback Machine' && t.url.startsWith('https://web.archive.org/web/'))).toBe(true);
   });
   it('un teléfono sin país conocido no se marca en el mapa', async () => {
     vi.stubGlobal('fetch', fakeFetch({}));

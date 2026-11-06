@@ -622,6 +622,14 @@ export async function executeOsintInvestigation(params: {
       upsertNode({ id: wbId, label: `Wayback: primera captura ${date || 'N/D'}`, subtitle: 'Internet Archive', type: 'domain', platform: 'Archive.org', category: 'Archivo histórico', aliasFamily: 'Infraestructura', url: safeHttpUrl(snap.url), timestamp: date || undefined, confidence: sourceConfidence(90, 'Captura archivada en la Wayback Machine'), verifiedStatus: 'verified', metadata: { fecha: date || 'N/D', captura: snap.url || 'N/D' } });
       upsertEdge(seedNodeId, wbId, 'archivado en', 2);
       if (date) addTimeline({ id: `tl-wb-${d}`, date, title: `Primera captura de ${d} en la Wayback Machine`, description: 'Captura más antigua disponible en Internet Archive.', category: 'domain_whois', sourcePlatform: 'Archive.org', sourceUrl: safeHttpUrl(snap.url), nodeId: wbId, confidence: 90 });
+      addLog('Wayback Machine', `Primera captura de ${d}: ${date || 'sin fecha'}.`, 'success');
+    } else if (wb.ok) {
+      addLog('Wayback Machine', `${d} no tiene capturas en Internet Archive.`, 'info');
+    } else {
+      // archive.org responde 429 sin cabecera CORS: el navegador solo ve un fallo de red
+      const detail = wb.status ? `HTTP ${wb.status}` : 'sin respuesta: límite de peticiones o bloqueo CORS';
+      addLog('Wayback Machine', `No se pudo consultar (${detail}). Queda en la cola para revisarlo a mano.`, 'warning');
+      addManualTask({ platform: 'Wayback Machine', url: `https://web.archive.org/web/*/${encodeURIComponent(d)}`, target: d, reason: wb.status === 429 || wb.status === 0 ? 'HTTP_429' : 'CORS_BLOCKED', httpStatus: wb.status || undefined, retriesAttempted: wb.retriesUsed, notes: `La API de la Wayback Machine no respondió (${detail}). Abre el enlace para ver las capturas del dominio.` });
     }
     progress();
   }
