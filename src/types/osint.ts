@@ -23,18 +23,38 @@ export type EntityType =
   | 'national_id'
   | 'location'
   | 'alias_variant'
-  | 'dork_query';
+  | 'dork_query'
+  | 'evidence_file';
 
 export type ClusterGroupMode = 'none' | 'type' | 'platform' | 'alias_family';
 
+/**
+ * Puntuación 0–100. Con basis 'identity' mide si un perfil es de la misma persona que el objetivo
+ * (se desglosa en los cinco factores y las penalizaciones). Con basis 'source' es la fiabilidad
+ * de un dato técnico (RDAP, DNS, Shodan…): no dice nada de identidad y los factores valen 0.
+ */
 export interface ConfidenceBreakdown {
-  total: number; // 0 to 100
-  handleMatch: number; // 0 to 30
-  aliasSimilarity: number; // 0 to 20
-  bioNameMatch: number; // 0 to 20
-  geoMatch: number; // 0 to 15
-  avatarDomainMatch: number; // 0 to 15
+  total: number; // 0 a 100
+  handleMatch: number; // 0 a 30
+  aliasSimilarity: number; // 0 a 20
+  bioNameMatch: number; // 0 a 20
+  geoMatch: number; // 0 a 15
+  avatarDomainMatch: number; // 0 a 15
+  /** Puntos restados por datos que contradicen las pistas (otra ciudad, otro nombre). */
+  penalty?: number;
+  basis?: 'identity' | 'source';
   reasons: string[];
+}
+
+/** Datos públicos de un perfil con los que se calcula la puntuación de identidad. */
+export interface ProfileEvidence {
+  handle: string;
+  displayName?: string;
+  bio?: string;
+  location?: string;
+  website?: string;
+  /** El perfil solo se ha detectado por el código HTTP (sin datos que comparar). */
+  statusOnly?: boolean;
 }
 
 export interface GraphNode {
@@ -54,7 +74,13 @@ export interface GraphNode {
     label: string;
   };
   metadata: Record<string, string | number | boolean | string[]>;
+  /** Solo en perfiles: lo que se compara para puntuar la identidad. */
+  evidence?: ProfileEvidence;
+  /** Búsqueda que tiene sentido lanzar desde este nodo (doble clic / «Pivotar»). */
+  pivot?: { query: string; type: InputType };
   verifiedStatus: 'verified' | 'unverified' | 'false_positive';
+  /** El analista ha marcado el nodo como real o como homónimo: el recálculo no lo cambia. */
+  analystReviewed?: boolean;
   x?: number;
   y?: number;
   vx?: number;
@@ -100,7 +126,7 @@ export interface ManualTask {
   platform: string;
   url: string;
   target: string;
-  reason: 'HTTP_429' | 'CORS_BLOCKED' | 'WAF_CHALLENGE' | 'MANUAL_DORK';
+  reason: 'HTTP_429' | 'CORS_BLOCKED' | 'WAF_CHALLENGE' | 'MANUAL_DORK' | 'NO_DATA' | 'SIMULATION';
   httpStatus?: number;
   retriesAttempted: number;
   timestamp: string;
@@ -143,6 +169,15 @@ export interface ContextHints {
   expectedYear?: string;
 }
 
+/** Resultado de comprobar un usuario en un sitio del catálogo. */
+export interface SiteCheck {
+  site: string;
+  url: string;
+  result: 'found' | 'not_found' | 'unknown' | 'manual';
+  httpStatus?: number;
+  detail: string;
+}
+
 export interface InvestigationCase {
   id: string;
   name: string;
@@ -160,17 +195,24 @@ export interface InvestigationCase {
   aliasVariants: AliasVariant[];
   aiSummary?: string;
   logs: InvestigationLog[];
+  /** Comprobaciones de la última búsqueda de usuario, sitio por sitio. */
+  siteChecks?: SiteCheck[];
+  siteChecksFor?: string;
+  /** Caso de ejemplo con datos inventados. */
+  isDemo?: boolean;
 }
 
 export interface ApiCredentials {
+  /** Proxy CORS propio (vacío = sin proxy). Recibe la URL de destino codificada al final. */
   corsProxy: string;
+  /** Sondear por el proxy los sitios del catálogo que no admiten CORS. */
   useCorsProxyForSherlock: boolean;
-  shodanKey: string;
+  /** Permitir que las claves de HIBP, VirusTotal y URLScan viajen por el proxy (las verá quien lo gestione). */
+  allowKeysThroughProxy: boolean;
   virusTotalKey: string;
   urlScanKey: string;
   hibpKey: string;
   hunterKey: string;
-  abuseIpDbKey: string;
   serperKey: string;
   openAiKey: string;
   openAiModel: string;
@@ -189,6 +231,14 @@ export interface SherlockSite {
     | 'Profesional y Finanzas';
   urlTemplate: string;
   probeUrlTemplate?: string;
-  probeMode: 'direct_json' | 'cors_status' | 'manual_waf';
+  /**
+   * direct_json: API con CORS que se consulta desde el navegador.
+   * proxy_status: responde 404 si el usuario no existe; necesita proxy propio.
+   * proxy_message: responde 200 siempre, pero con errorMsg si no existe; necesita proxy propio.
+   * manual: responde 200 aunque el usuario no exista o exige sesión: solo se puede comprobar a mano.
+   */
+  probeMode: 'direct_json' | 'proxy_status' | 'proxy_message' | 'manual';
   errorMsg?: string;
+  /** Por qué el sitio está en modo manual. */
+  manualReason?: string;
 }

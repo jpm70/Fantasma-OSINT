@@ -1,83 +1,188 @@
-import { ApiCredentials, InvestigationCase } from '../types/osint';
-import { generateAliasFamilies } from './aliasAndConfidenceEngine';
+import { ApiCredentials, GraphNode, InvestigationCase, ProfileEvidence } from '../types/osint';
+import { generateAliasFamilies, rescoreProfiles, scoreEvidence, sourceConfidence } from './aliasAndConfidenceEngine';
+import { decryptVault, encryptVault, isVaultBlob, legacyXorDecode } from '../engine/vault';
+import { safeHttpUrl } from '../engine/integrity';
 
 const DB_NAME = 'FantasmaOSINT_DB';
 const DB_VERSION = 1;
 const STORE_CASES = 'cases';
-const LOCAL_STORAGE_CASES_BACKUP = 'fantasma_osint_cases_backup_v1';
-const LOCAL_STORAGE_CREDS_KEY = 'fantasma_osint_vault_v1';
-const CIPHER_SALT = 'UN_FANTASMA_EN_EL_SISTEMA_OSINT_2026';
+const LS_CASES_FALLBACK = 'fantasma_osint_cases_backup_v1';
+const LS_SETTINGS = 'fantasma_osint_settings_v2';
+const LS_VAULT = 'fantasma_osint_vault_v2';
+const LS_LEGACY_VAULT = 'fantasma_osint_vault_v1';
+const LEGACY_DEMO_ID = 'case-fantasma-demo-01';
+export const DEMO_CASE_ID = 'case-demo-ficticio-v2';
+
+export const SECRET_FIELDS = ['openAiKey', 'hibpKey', 'hunterKey', 'virusTotalKey', 'urlScanKey', 'serperKey'] as const;
+export type SecretField = (typeof SECRET_FIELDS)[number];
 
 export const DEFAULT_CREDENTIALS: ApiCredentials = {
-  corsProxy: 'https://corsproxy.io/?',
+  corsProxy: '',
   useCorsProxyForSherlock: true,
-  shodanKey: '',
+  allowKeysThroughProxy: false,
   virusTotalKey: '',
   urlScanKey: '',
   hibpKey: '',
   hunterKey: '',
-  abuseIpDbKey: '',
   serperKey: '',
   openAiKey: '',
   openAiModel: 'gpt-4o-mini',
 };
 
-/**
- * Symmetric XOR + UTF-8 Base64 encoding for localStorage credential protection.
- */
-function encryptPayload(plainText: string): string {
+const lsGet = (k: string) => {
   try {
-    const encoded = encodeURIComponent(plainText);
-    let result = '';
-    for (let i = 0; i < encoded.length; i++) {
-      const charCode = encoded.charCodeAt(i) ^ CIPHER_SALT.charCodeAt(i % CIPHER_SALT.length);
-      result += String.fromCharCode(charCode);
-    }
-    return btoa(result);
+    return localStorage.getItem(k);
   } catch {
-    return btoa(encodeURIComponent(plainText));
+    return null;
   }
-}
-
-function decryptPayload(cipherText: string): string {
+};
+const lsSet = (k: string, v: string) => {
   try {
-    const raw = atob(cipherText);
-    let decoded = '';
-    for (let i = 0; i < raw.length; i++) {
-      const charCode = raw.charCodeAt(i) ^ CIPHER_SALT.charCodeAt(i % CIPHER_SALT.length);
-      decoded += String.fromCharCode(charCode);
-    }
-    return decodeURIComponent(decoded);
+    localStorage.setItem(k, v);
   } catch {
-    return '';
+    // almacenamiento no disponible
   }
-}
-
-export function saveCredentialsToVault(creds: ApiCredentials): void {
+};
+const lsDel = (k: string) => {
   try {
-    const json = JSON.stringify(creds);
-    const encrypted = encryptPayload(json);
-    localStorage.setItem(LOCAL_STORAGE_CREDS_KEY, encrypted);
-  } catch (err) {
-    console.error('Error guardando credenciales en bóveda local:', err);
+    localStorage.removeItem(k);
+  } catch {
+    // almacenamiento no disponible
   }
-}
+};
 
-export function loadCredentialsFromVault(): ApiCredentials {
+// ---------------------------------------------------------------------------
+// Ajustes (no secretos) y bóveda de claves
+// ---------------------------------------------------------------------------
+
+/** Ajustes sin secretos: proxy, opciones y modelo. Las claves nunca se guardan aquí. */
+export function loadSettings(): ApiCredentials {
   try {
-    const stored = localStorage.getItem(LOCAL_STORAGE_CREDS_KEY);
-    if (!stored) return { ...DEFAULT_CREDENTIALS };
-    const decrypted = decryptPayload(stored);
-    if (!decrypted) return { ...DEFAULT_CREDENTIALS };
-    return { ...DEFAULT_CREDENTIALS, ...JSON.parse(decrypted) };
+    const raw = lsGet(LS_SETTINGS);
+    const s = raw ? JSON.parse(raw) : {};
+    return {
+      ...DEFAULT_CREDENTIALS,
+      corsProxy: typeof s.corsProxy === 'string' ? s.corsProxy : '',
+      useCorsProxyForSherlock: s.useCorsProxyForSherlock !== false,
+      allowKeysThroughProxy: s.allowKeysThroughProxy === true,
+      openAiModel: typeof s.openAiModel === 'string' ? s.openAiModel : DEFAULT_CREDENTIALS.openAiModel,
+    };
   } catch {
     return { ...DEFAULT_CREDENTIALS };
   }
 }
 
+export function saveSettings(c: ApiCredentials): void {
+  lsSet(LS_SETTINGS, JSON.stringify({ corsProxy: c.corsProxy, useCorsProxyForSherlock: c.useCorsProxyForSherlock, allowKeysThroughProxy: c.allowKeysThroughProxy, openAiModel: c.openAiModel }));
+}
+
+export function pickSecrets(c: ApiCredentials): Record<SecretField, string> {
+  return Object.fromEntries(SECRET_FIELDS.map((k) => [k, c[k] || ''])) as Record<SecretField, string>;
+}
+
+export function hasStoredVault(): boolean {
+  return !!lsGet(LS_VAULT);
+}
+
+export async function saveSecretsToVault(c: ApiCredentials, passphrase: string): Promise<void> {
+  const blob = await encryptVault(JSON.stringify(pickSecrets(c)), passphrase);
+  lsSet(LS_VAULT, JSON.stringify(blob));
+}
+
+/** Descifra la bóveda. Lanza un error si la frase es incorrecta. */
+export async function unlockVault(passphrase: string): Promise<Record<SecretField, string>> {
+  const raw = lsGet(LS_VAULT);
+  if (!raw) throw new Error('No hay bóveda guardada');
+  const blob = JSON.parse(raw);
+  if (!isVaultBlob(blob)) throw new Error('Bóveda con formato desconocido');
+  const secrets = JSON.parse(await decryptVault(blob, passphrase));
+  return Object.fromEntries(SECRET_FIELDS.map((k) => [k, typeof secrets[k] === 'string' ? secrets[k] : ''])) as Record<SecretField, string>;
+}
+
+export function forgetVault(): void {
+  lsDel(LS_VAULT);
+}
+
 /**
- * Opens IndexedDB connection for persistent OSINT cases.
+ * La v1 guardaba las claves «cifradas» con XOR y una cadena escrita en el propio código.
+ * Se leen, se borran del navegador y se devuelven para usarlas en la sesión.
  */
+export function migrateLegacyVault(): Partial<ApiCredentials> | null {
+  const raw = lsGet(LS_LEGACY_VAULT);
+  if (!raw) return null;
+  lsDel(LS_LEGACY_VAULT);
+  const decoded = legacyXorDecode(raw);
+  if (!decoded) return null;
+  try {
+    const old = JSON.parse(decoded);
+    const out: Partial<ApiCredentials> = {};
+    for (const k of SECRET_FIELDS) if (typeof old[k] === 'string' && old[k]) out[k] = old[k];
+    return Object.keys(out).length ? out : null;
+  } catch {
+    return null;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Casos
+// ---------------------------------------------------------------------------
+
+const nd = (v: unknown) => (typeof v === 'string' && v && v !== 'N/D' && !/^sin biograf|^no especificada/i.test(v) ? v : undefined);
+
+/** Completa y actualiza un caso guardado por una versión anterior o importado desde JSON. */
+export function normalizeCase(raw: any): InvestigationCase | null {
+  if (!raw || typeof raw !== 'object' || typeof raw.id !== 'string' || !Array.isArray(raw.nodes)) return null;
+  const arr = (v: unknown) => (Array.isArray(v) ? v : []);
+  const nodes: GraphNode[] = arr(raw.nodes)
+    .filter((n: any) => n && typeof n.id === 'string' && typeof n.label === 'string')
+    .map((n: any) => {
+      const node: GraphNode = {
+        ...n,
+        platform: String(n.platform ?? 'Desconocida'),
+        category: String(n.category ?? ''),
+        aliasFamily: String(n.aliasFamily ?? ''),
+        metadata: n.metadata && typeof n.metadata === 'object' ? n.metadata : {},
+        url: safeHttpUrl(n.url),
+        verifiedStatus: ['verified', 'unverified', 'false_positive'].includes(n.verifiedStatus) ? n.verifiedStatus : 'unverified',
+        confidence: n.confidence && typeof n.confidence.total === 'number' ? n.confidence : sourceConfidence(50, 'Sin puntuación'),
+      };
+      if (node.type === 'social_profile' && !node.evidence) {
+        const m = node.metadata as Record<string, unknown>;
+        const handle = nd(m.usuario) ?? node.label.split(':').pop()!.trim();
+        const ev: ProfileEvidence = { handle, displayName: nd(m.nombreVisible), bio: nd(m.biografia), location: nd(m.ubicacion), website: nd(m.web), statusOnly: m.codigoHttp === 200 || undefined };
+        node.evidence = ev;
+        node.pivot = { query: handle, type: 'username' };
+        if (node.verifiedStatus === 'verified' && !node.analystReviewed) node.verifiedStatus = 'unverified';
+      } else if (!node.evidence && node.confidence.basis !== 'identity') {
+        node.confidence = { ...node.confidence, basis: 'source' };
+      }
+      return node;
+    });
+  const c: InvestigationCase = {
+    id: raw.id,
+    name: String(raw.name ?? 'Caso importado'),
+    description: String(raw.description ?? ''),
+    createdAt: String(raw.createdAt ?? new Date().toISOString()),
+    updatedAt: String(raw.updatedAt ?? new Date().toISOString()),
+    seedQuery: String(raw.seedQuery ?? nodes[0]?.label ?? 'objetivo'),
+    seedType: raw.seedType ?? 'username',
+    contextHints: raw.contextHints && typeof raw.contextHints === 'object' ? raw.contextHints : {},
+    nodes,
+    edges: arr(raw.edges).filter((e: any) => e && typeof e.source === 'string' && typeof e.target === 'string'),
+    timeline: arr(raw.timeline),
+    locations: arr(raw.locations).filter((l: any) => l && Number.isFinite(l.lat) && Number.isFinite(l.lng)),
+    manualTasks: arr(raw.manualTasks).map((t: any) => ({ ...t, url: safeHttpUrl(t.url) ?? '' })).filter((t: any) => t.url),
+    aliasVariants: arr(raw.aliasVariants),
+    aiSummary: typeof raw.aiSummary === 'string' ? raw.aiSummary : undefined,
+    logs: arr(raw.logs),
+    siteChecks: Array.isArray(raw.siteChecks) ? raw.siteChecks : undefined,
+    siteChecksFor: typeof raw.siteChecksFor === 'string' ? raw.siteChecksFor : undefined,
+    isDemo: raw.isDemo === true,
+  };
+  c.nodes = rescoreProfiles(c.nodes, c.seedQuery, c.contextHints);
+  return c;
+}
+
 function openDatabase(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
     if (typeof indexedDB === 'undefined') {
@@ -87,42 +192,37 @@ function openDatabase(): Promise<IDBDatabase> {
     const request = indexedDB.open(DB_NAME, DB_VERSION);
     request.onupgradeneeded = () => {
       const db = request.result;
-      if (!db.objectStoreNames.contains(STORE_CASES)) {
-        db.createObjectStore(STORE_CASES, { keyPath: 'id' });
-      }
+      if (!db.objectStoreNames.contains(STORE_CASES)) db.createObjectStore(STORE_CASES, { keyPath: 'id' });
     };
     request.onsuccess = () => resolve(request.result);
     request.onerror = () => reject(request.error);
   });
 }
 
-export async function saveCaseToStorage(osintCase: InvestigationCase): Promise<void> {
-  const updatedCase = { ...osintCase, updatedAt: new Date().toISOString() };
+function fallbackList(): InvestigationCase[] {
+  try {
+    const raw = lsGet(LS_CASES_FALLBACK);
+    return raw ? JSON.parse(raw) : [];
+  } catch {
+    return [];
+  }
+}
+
+/** Se guarda en IndexedDB; solo si no está disponible (p. ej. modo privado) se usa localStorage. */
+export async function saveCaseToStorage(osintCase: InvestigationCase, touch = true): Promise<void> {
+  const updated = touch ? { ...osintCase, updatedAt: new Date().toISOString() } : osintCase;
   try {
     const db = await openDatabase();
     await new Promise<void>((resolve, reject) => {
       const tx = db.transaction(STORE_CASES, 'readwrite');
-      const store = tx.objectStore(STORE_CASES);
-      store.put(updatedCase);
+      tx.objectStore(STORE_CASES).put(updated);
       tx.oncomplete = () => resolve();
       tx.onerror = () => reject(tx.error);
     });
+    return;
   } catch {
-    // Fallback to localStorage if IndexedDB is restricted in private browsing
-  }
-
-  try {
-    const existingRaw = localStorage.getItem(LOCAL_STORAGE_CASES_BACKUP);
-    const list: InvestigationCase[] = existingRaw ? JSON.parse(existingRaw) : [];
-    const idx = list.findIndex((c) => c.id === updatedCase.id);
-    if (idx >= 0) {
-      list[idx] = updatedCase;
-    } else {
-      list.unshift(updatedCase);
-    }
-    localStorage.setItem(LOCAL_STORAGE_CASES_BACKUP, JSON.stringify(list));
-  } catch (e) {
-    console.warn('Backup en localStorage omitido por cuota:', e);
+    const list = fallbackList().filter((c) => c.id !== updated.id);
+    lsSet(LS_CASES_FALLBACK, JSON.stringify([updated, ...list]));
   }
 }
 
@@ -136,551 +236,123 @@ export async function deleteCaseFromStorage(caseId: string): Promise<void> {
       tx.onerror = () => reject(tx.error);
     });
   } catch {
-    // Ignore
+    // sin IndexedDB
   }
-
-  try {
-    const existingRaw = localStorage.getItem(LOCAL_STORAGE_CASES_BACKUP);
-    if (existingRaw) {
-      const list: InvestigationCase[] = JSON.parse(existingRaw);
-      const filtered = list.filter((c) => c.id !== caseId);
-      localStorage.setItem(LOCAL_STORAGE_CASES_BACKUP, JSON.stringify(filtered));
-    }
-  } catch {
-    // Ignore
-  }
+  lsSet(LS_CASES_FALLBACK, JSON.stringify(fallbackList().filter((c) => c.id !== caseId)));
 }
 
 export async function loadAllCasesFromStorage(): Promise<InvestigationCase[]> {
+  let raw: any[] = [];
   try {
     const db = await openDatabase();
-    const cases = await new Promise<InvestigationCase[]>((resolve, reject) => {
+    raw = await new Promise<any[]>((resolve, reject) => {
       const tx = db.transaction(STORE_CASES, 'readonly');
-      const store = tx.objectStore(STORE_CASES);
-      const req = store.getAll();
+      const req = tx.objectStore(STORE_CASES).getAll();
       req.onsuccess = () => resolve(req.result || []);
       req.onerror = () => reject(req.error);
     });
-    if (cases.length > 0) {
-      return cases.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
-    }
   } catch {
-    // Fallback to localStorage
+    // sin IndexedDB
   }
+  // Casos de la v1, que se duplicaban en localStorage: se pasan a IndexedDB y se borra la copia
+  const legacy = fallbackList();
+  for (const c of legacy) if (!raw.some((r) => r.id === c.id)) raw.push(c);
 
-  try {
-    const existingRaw = localStorage.getItem(LOCAL_STORAGE_CASES_BACKUP);
-    if (existingRaw) {
-      const parsed: InvestigationCase[] = JSON.parse(existingRaw);
-      if (parsed.length > 0) return parsed;
+  // El caso de demostración de la v1 se sustituye por el nuevo
+  const legacyDemo = raw.some((r) => r.id === LEGACY_DEMO_ID);
+  raw = raw.filter((r) => r.id !== LEGACY_DEMO_ID);
+  const cases = raw.map(normalizeCase).filter((c): c is InvestigationCase => !!c);
+
+  if (!cases.some((c) => c.id === DEMO_CASE_ID) && (cases.length === 0 || legacyDemo)) cases.push(createInitialDemoCase());
+  for (const c of cases) await saveCaseToStorage(c, false);
+  if (legacyDemo) await deleteCaseFromStorage(LEGACY_DEMO_ID);
+  if (legacy.length) {
+    try {
+      await openDatabase();
+      lsDel(LS_CASES_FALLBACK);
+    } catch {
+      // sin IndexedDB: la copia en localStorage sigue siendo el almacenamiento
     }
-  } catch {
-    // Ignore
   }
-
-  const demoCase = createInitialDemoCase();
-  await saveCaseToStorage(demoCase);
-  return [demoCase];
+  return cases.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
 }
 
+// ---------------------------------------------------------------------------
+// Caso de ejemplo (datos inventados)
+// ---------------------------------------------------------------------------
+
 /**
- * Creates a rich, realistic initial OSINT case demonstrating all modules:
- * Live Graph nodes, Alias Families, Confidence Scoring (0-100), Leaflet Geo markers,
- * Chronological Timeline, and HTTP 429 Manual Verification Queue.
+ * Caso de ejemplo con datos inventados: el dominio example.org (reservado por la IANA),
+ * IP de documentación 203.0.113.0/24 y perfiles ficticios. Las puntuaciones las calcula el
+ * mismo motor que en una búsqueda real, para ver cómo las pistas separan a la persona
+ * buscada de un homónimo.
  */
 export function createInitialDemoCase(): InvestigationCase {
-  const seed = 'unfantasma';
-  const aliasVariants = generateAliasFamilies(seed, {
-    expectedName: 'Fantasma Sistema',
-    expectedLocation: 'Madrid, España',
-    expectedDomain: 'unfantasmaenelsistema.com',
-    expectedYear: '26',
-  }).map((v, i) => ({
-    ...v,
-    tested: i < 5,
-    hitsCount: i === 0 ? 4 : i === 1 ? 2 : i === 2 ? 1 : 0,
-  }));
+  const seed = 'laura_ejemplo';
+  const hints = { expectedName: 'Laura Ejemplo', expectedLocation: 'Valencia', expectedDomain: 'example.org', expectedYear: '' };
+  const now = new Date().toISOString();
+  const seedId = 'seed-laura_ejemplo';
+  const profile = (id: string, platform: string, category: string, ev: ProfileEvidence, created?: string, coords?: { lat: number; lng: number; label: string }): GraphNode => ({
+    id,
+    label: `${platform}: ${ev.handle}`,
+    subtitle: ev.displayName ? `${ev.displayName} · ${category}` : category,
+    type: 'social_profile',
+    platform,
+    category,
+    aliasFamily: ev.handle === seed ? 'Raíz exacta' : 'Variante',
+    confidence: scoreEvidence(seed, ev, hints),
+    evidence: ev,
+    pivot: { query: ev.handle, type: 'username' },
+    verifiedStatus: 'unverified',
+    timestamp: created,
+    coordinates: coords,
+    metadata: { ficticio: 'Sí', usuario: ev.handle, nombreVisible: ev.displayName || 'N/D', ubicacion: ev.location || 'N/D', web: ev.website || 'N/D', creacion: created || 'N/D' },
+  });
 
-  return {
-    id: 'case-fantasma-demo-01',
-    name: 'Operación Fantasma: Huella Digital y Superficie Externa',
-    description:
-      'Caso base demostrativo con correlación de alias, certificados crt.sh, puertos pasivos InternetDB, brechas de correo y geolocalización.',
-    createdAt: '2026-10-15T09:30:00.000Z',
-    updatedAt: new Date().toISOString(),
-    seedQuery: 'unfantasma',
+  const nodes: GraphNode[] = [
+    { id: seedId, label: seed, subtitle: 'Semilla (username)', type: 'seed', platform: 'Entrada del analista', category: 'Semilla', aliasFamily: 'Raíz exacta', confidence: sourceConfidence(100, 'Punto de partida definido por el analista'), verifiedStatus: 'verified', pivot: { query: seed, type: 'username' }, metadata: { tipo: 'username', ficticio: 'Sí' } },
+    profile('demo-github', 'GitHub', 'Desarrollo', { handle: seed, displayName: 'Laura Ejemplo', bio: 'Administración de sistemas y redes.', location: 'Valencia, España', website: 'https://example.org' }, '2019-03-14', { lat: 39.4699, lng: -0.3763, label: 'Valencia, España (GitHub)' }),
+    profile('demo-keybase', 'Keybase', 'Ciberseguridad', { handle: seed, displayName: 'Laura Ejemplo' }, undefined),
+    profile('demo-mastodon', 'Mastodon (mastodon.social)', 'Redes Sociales', { handle: seed, displayName: 'L. E.', website: 'https://example.org/blog' }, '2022-11-02'),
+    profile('demo-lichess', 'Lichess', 'Gaming', { handle: seed, displayName: 'Lauri', bio: 'Ajedrez cada noche', location: 'Buenos Aires, Argentina' }, '2016-07-21', { lat: -34.6037, lng: -58.3816, label: 'Buenos Aires, Argentina (Lichess)' }),
+    profile('demo-devto', 'Dev.to', 'Desarrollo', { handle: 'laura_ejemplo_dev', displayName: 'Laura E.' }, '2021-05-09'),
+    { id: 'demo-domain', label: 'example.org', subtitle: 'Web enlazada desde GitHub', type: 'domain', platform: 'Ejemplo', category: 'Infraestructura web', aliasFamily: 'Infraestructura', url: 'https://example.org', confidence: sourceConfidence(90, 'Dominio enlazado desde el perfil (ficticio)'), pivot: { query: 'example.org', type: 'domain' }, verifiedStatus: 'verified', metadata: { ficticio: 'Sí', nota: 'example.org está reservado por la IANA para ejemplos' } },
+    { id: 'demo-ip', label: '203.0.113.10', subtitle: 'IP de documentación (RFC 5737)', type: 'ip', platform: 'Ejemplo', category: 'Red', aliasFamily: 'Infraestructura', confidence: sourceConfidence(90, 'IP ficticia'), verifiedStatus: 'verified', metadata: { ficticio: 'Sí', nota: '203.0.113.0/24 está reservada para documentación' } },
+  ];
+
+  const c: InvestigationCase = {
+    id: DEMO_CASE_ID,
+    name: 'Caso de ejemplo (datos ficticios)',
+    description: 'Datos inventados para practicar: dos perfiles coinciden con las pistas, uno las contradice (otra ciudad y otro nombre) y otros no tienen datos suficientes. Cambia las pistas en «Familias y confianza» para ver cómo cambian las puntuaciones.',
+    createdAt: now,
+    updatedAt: now,
+    seedQuery: seed,
     seedType: 'username',
-    contextHints: {
-      expectedName: 'Un Fantasma en el Sistema',
-      expectedLocation: 'Madrid, España',
-      expectedDomain: 'unfantasmaenelsistema.com',
-      expectedYear: '2026',
-    },
-    nodes: [
-      {
-        id: 'node-seed',
-        label: 'unfantasma',
-        subtitle: 'Objetivo Principal (Seed)',
-        type: 'seed',
-        platform: 'Input OSINT',
-        category: 'Identidad Base',
-        aliasFamily: 'Raíz Exacta',
-        confidence: {
-          total: 100,
-          handleMatch: 30,
-          aliasSimilarity: 20,
-          bioNameMatch: 20,
-          geoMatch: 15,
-          avatarDomainMatch: 15,
-          reasons: ['Semilla inicial de la investigación definida por el analista [100]'],
-        },
-        verifiedStatus: 'verified',
-        metadata: {
-          tipo: 'Username / Handle',
-          raizMorfologica: 'fantasma',
-          fechaInicio: '2026-11-04',
-        },
-      },
-      {
-        id: 'node-domain-main',
-        label: 'unfantasmaenelsistema.com',
-        subtitle: 'Dominio Principal Vinculado',
-        type: 'domain',
-        platform: 'RDAP / DNS',
-        category: 'Infraestructura Web',
-        aliasFamily: 'Raíz Exacta',
-        url: 'https://www.unfantasmaenelsistema.com/',
-        timestamp: '2021-03-14',
-        confidence: {
-          total: 96,
-          handleMatch: 30,
-          aliasSimilarity: 20,
-          bioNameMatch: 18,
-          geoMatch: 13,
-          avatarDomainMatch: 15,
-          reasons: [
-            'Dominio oficial enlazado en biografías de perfiles técnicos [+30]',
-            'Certificado TLS activo verificado en crt.sh [+20]',
-            'Coincidencia exacta con pista de dominio esperado [+15]',
-          ],
-        },
-        verifiedStatus: 'verified',
-        metadata: {
-          registrar: 'Cloudflare / ICANN RDAP',
-          estado: 'clientTransferProhibited',
-          dnssec: 'Firmado ( Seguro )',
-          webUrl: 'https://www.unfantasmaenelsistema.com/',
-        },
-      },
-      {
-        id: 'node-gh-profile',
-        label: 'github.com/unfantasma',
-        subtitle: 'Perfil de Desarrollo & Seguridad',
-        type: 'social_profile',
-        platform: 'GitHub',
-        category: 'Desarrollo',
-        aliasFamily: 'Raíz Exacta',
-        url: 'https://github.com/unfantasma',
-        timestamp: '2020-08-22',
-        coordinates: {
-          lat: 40.4168,
-          lng: -3.7038,
-          label: 'Madrid, España (Perfil GitHub)',
-        },
-        confidence: {
-          total: 94,
-          handleMatch: 30,
-          aliasSimilarity: 20,
-          bioNameMatch: 19,
-          geoMatch: 15,
-          avatarDomainMatch: 10,
-          reasons: [
-            'Coincidencia exacta de identificador principal ("unfantasma") [+30]',
-            'Ubicación declarada coincide con Madrid, España [+15]',
-            'Enlace al blog unfantasmaenelsistema.com en perfil [+15]',
-          ],
-        },
-        verifiedStatus: 'verified',
-        metadata: {
-          repositoriosPublicos: 28,
-          seguidores: 412,
-          ubicacion: 'Madrid, España',
-          biografia: 'Investigación en Ciberseguridad, OSINT & Hacking Ético.',
-        },
-      },
-      {
-        id: 'node-alias-leet',
-        label: 'unf4nt4sm4_sec',
-        subtitle: 'Variante Familia Leet + Sufijo',
-        type: 'alias_variant',
-        platform: 'Keybase / Mastodon',
-        category: 'Ciberseguridad',
-        aliasFamily: 'Leet Speak (1337)',
-        url: 'https://keybase.io/unf4nt4sm4',
-        timestamp: '2022-05-19',
-        confidence: {
-          total: 84,
-          handleMatch: 22,
-          aliasSimilarity: 18,
-          bioNameMatch: 18,
-          geoMatch: 13,
-          avatarDomainMatch: 13,
-          reasons: [
-            'Variante Leet Speak derivada de la raíz "unfantasma" [+22]',
-            'Huella PGP / Avatar hash coincidente entre plataformas [+13]',
-            'Mención a investigaciones OSINT en biografía [+18]',
-          ],
-        },
-        verifiedStatus: 'verified',
-        metadata: {
-          patronAlias: 'Sustitución vocálica a->4 + sufijo _sec',
-          similitudRaiz: '82%',
-          llavePGP: '0x9F4B...E82A',
-        },
-      },
-      {
-        id: 'node-homonym-low',
-        label: 'reddit.com/u/fantasma99_gamer',
-        subtitle: 'Posible Homónimo (Baja Confianza)',
-        type: 'social_profile',
-        platform: 'Reddit',
-        category: 'Foros y Comunidad',
-        aliasFamily: 'Sufijo Numérico',
-        url: 'https://www.reddit.com/user/fantasma99_gamer',
-        timestamp: '2023-11-02',
-        coordinates: {
-          lat: -34.6037,
-          lng: -58.3816,
-          label: 'Buenos Aires, Argentina (Zona Horaria UTC-3)',
-        },
-        confidence: {
-          total: 32,
-          handleMatch: 12,
-          aliasSimilarity: 10,
-          bioNameMatch: 4,
-          geoMatch: 2,
-          avatarDomainMatch: 4,
-          reasons: [
-            'Coincidencia parcial solo en palabra común "fantasma" [+12]',
-            'Discrepancia geográfica (Buenos Aires vs Madrid) [+2]',
-            'Sin correlación de avatar ni enlaces a unfantasmaenelsistema.com [+4]',
-          ],
-        },
-        verifiedStatus: 'false_positive',
-        metadata: {
-          evaluacion: 'Homónimo descartado por el algoritmo de Scoring',
-          actividadPrincipal: 'Gaming / Deportes',
-          ubicacionDetectada: 'Buenos Aires, AR',
-        },
-      },
-      {
-        id: 'node-sub-crt',
-        label: 'osint.unfantasmaenelsistema.com',
-        subtitle: 'Subdominio Histórico (crt.sh)',
-        type: 'subdomain',
-        platform: 'crt.sh CT Logs',
-        category: 'Infraestructura Web',
-        aliasFamily: 'Raíz Exacta',
-        timestamp: '2025-02-10',
-        confidence: {
-          total: 91,
-          handleMatch: 28,
-          aliasSimilarity: 18,
-          bioNameMatch: 15,
-          geoMatch: 15,
-          avatarDomainMatch: 15,
-          reasons: [
-            'Extraído de registros públicos de Certificate Transparency (crt.sh) [+28]',
-            'Subdominio perteneciente al dominio raíz confirmado [+15]',
-          ],
-        },
-        verifiedStatus: 'verified',
-        metadata: {
-          emisorCertificado: "Let's Encrypt Authority X3",
-          validezDesde: '2025-02-10',
-          registroCT: 'crt.sh ID #1194820412',
-        },
-      },
-      {
-        id: 'node-ip-edge',
-        label: '104.21.48.192',
-        subtitle: 'Nodo Edge / Reverse Proxy IP',
-        type: 'ip',
-        platform: 'Shodan InternetDB',
-        category: 'Infraestructura de Red',
-        aliasFamily: 'Infraestructura',
-        timestamp: '2026-01-18',
-        coordinates: {
-          lat: 50.1109,
-          lng: 8.6821,
-          label: 'Frankfurt, Alemania (Nodo Anycast EU)',
-        },
-        confidence: {
-          total: 88,
-          handleMatch: 25,
-          aliasSimilarity: 16,
-          bioNameMatch: 15,
-          geoMatch: 15,
-          avatarDomainMatch: 17,
-          reasons: [
-            'Resolución DNS A/AAAA vinculada al dominio objetivo [+25]',
-            'Puertos pasivos inspeccionados vía Shodan InternetDB [+17]',
-          ],
-        },
-        verifiedStatus: 'verified',
-        metadata: {
-          asn: 'AS13335 Cloudflare, Inc.',
-          puertosAbiertos: '80, 443, 8080, 8443',
-          cpes: 'cpe:/a:cloudflare:cloudflare',
-          ubicacionRed: 'Frankfurt am Main, DE',
-        },
-      },
-      {
-        id: 'node-ports-shodan',
-        label: 'Puertos: 80, 443, 8443 (TLS 1.3)',
-        subtitle: 'Superficie Shodan InternetDB',
-        type: 'port_vuln',
-        platform: 'Shodan InternetDB',
-        category: 'Infraestructura de Red',
-        aliasFamily: 'Infraestructura',
-        confidence: {
-          total: 86,
-          handleMatch: 24,
-          aliasSimilarity: 15,
-          bioNameMatch: 15,
-          geoMatch: 15,
-          avatarDomainMatch: 17,
-          reasons: ['Enumeración pasiva sin llaves desde internetdb.shodan.io [+24]'],
-        },
-        verifiedStatus: 'verified',
-        metadata: {
-          puertos: '80/tcp, 443/tcp, 8443/tcp',
-          vulnerabilidadesCVE: 'Ninguna CVE crítica expuesta (WAF Activo)',
-          tags: 'cdn, cloud, waf-protected',
-        },
-      },
-      {
-        id: 'node-email-contact',
-        label: 'contacto@unfantasmaenelsistema.com',
-        subtitle: 'Correo de Contacto / Seguridad',
-        type: 'email',
-        platform: 'XposedOrNot / DoH MX',
-        category: 'Identidad Base',
-        aliasFamily: 'Raíz Exacta',
-        timestamp: '2021-04-01',
-        confidence: {
-          total: 92,
-          handleMatch: 28,
-          aliasSimilarity: 19,
-          bioNameMatch: 16,
-          geoMatch: 14,
-          avatarDomainMatch: 15,
-          reasons: [
-            'Registros MX y política DMARC estricta verificados en el dominio [+28]',
-            'Verificado en XposedOrNot API sin credenciales expuestas en texto plano [+15]',
-          ],
-        },
-        verifiedStatus: 'verified',
-        metadata: {
-          estadoXposedOrNot: '0 brechas críticas de contraseñas',
-          dmarc: 'v=DMARC1; p=reject;',
-          spf: 'v=spf1 include:_spf.google.com ~all',
-        },
-      },
-    ],
+    contextHints: hints,
+    nodes,
     edges: [
-      { id: 'e-1', source: 'node-seed', target: 'node-domain-main', relation: 'opera_dominio', weight: 3 },
-      { id: 'e-2', source: 'node-seed', target: 'node-gh-profile', relation: 'perfil_confirmado (94%)', weight: 3 },
-      { id: 'e-3', source: 'node-seed', target: 'node-alias-leet', relation: 'familia_alias_1337', weight: 2 },
-      { id: 'e-4', source: 'node-seed', target: 'node-homonym-low', relation: 'posible_homonimo (32%)', weight: 1 },
-      { id: 'e-5', source: 'node-domain-main', target: 'node-sub-crt', relation: 'certificado_ct_crtsh', weight: 2 },
-      { id: 'e-6', source: 'node-domain-main', target: 'node-ip-edge', relation: 'resuelve_dns_a', weight: 2 },
-      { id: 'e-7', source: 'node-ip-edge', target: 'node-ports-shodan', relation: 'expone_puertos', weight: 2 },
-      { id: 'e-8', source: 'node-domain-main', target: 'node-email-contact', relation: 'registro_soa_mx', weight: 2 },
+      ...nodes.filter((n) => n.id.startsWith('demo-') && n.type === 'social_profile').map((n) => ({ id: `edge-${seedId}-${n.id}`, source: seedId, target: n.id, relation: `perfil en ${n.platform}`, weight: 3 })),
+      { id: 'edge-demo-github-domain', source: 'demo-github', target: 'demo-domain', relation: 'enlaza a', weight: 2 },
+      { id: 'edge-demo-domain-ip', source: 'demo-domain', target: 'demo-ip', relation: 'resuelve a', weight: 2 },
     ],
     timeline: [
-      {
-        id: 'tl-1',
-        date: '2020-08-22',
-        title: 'Creación de cuenta en GitHub (unfantasma)',
-        description: 'Registro inicial del perfil de investigación y publicación de primeros repositorios OSINT.',
-        category: 'account',
-        sourcePlatform: 'GitHub API',
-        sourceUrl: 'https://github.com/unfantasma',
-        nodeId: 'node-gh-profile',
-        confidence: 94,
-      },
-      {
-        id: 'tl-2',
-        date: '2021-03-14',
-        title: 'Registro del dominio unfantasmaenelsistema.com',
-        description: 'Alta en servidor RDAP oficial con protección de privacidad WHOIS y DNSSEC habilitado.',
-        category: 'domain_whois',
-        sourcePlatform: 'RDAP / ICANN',
-        sourceUrl: 'https://www.unfantasmaenelsistema.com/',
-        nodeId: 'node-domain-main',
-        confidence: 96,
-      },
-      {
-        id: 'tl-3',
-        date: '2022-05-19',
-        title: 'Aparición de variante Leet Speak (unf4nt4sm4_sec)',
-        description: 'Detección de alias secundario con misma huella de clave pública y temática de seguridad.',
-        category: 'account',
-        sourcePlatform: 'Keybase',
-        nodeId: 'node-alias-leet',
-        confidence: 84,
-      },
-      {
-        id: 'tl-4',
-        date: '2023-11-02',
-        title: 'Creación de cuenta homónima descartada (fantasma99_gamer)',
-        description: 'El motor de puntuación de confianza asignó 32/100 por discrepancia de ubicación y biografía.',
-        category: 'investigation',
-        sourcePlatform: 'Reddit',
-        nodeId: 'node-homonym-low',
-        confidence: 32,
-      },
-      {
-        id: 'tl-5',
-        date: '2025-02-10',
-        title: 'Emisión de certificado TLS en crt.sh (osint.unfantasmaenelsistema.com)',
-        description: 'Certificado registrado en logs de Transparencia de Certificados públicos.',
-        category: 'certificate',
-        sourcePlatform: 'crt.sh',
-        nodeId: 'node-sub-crt',
-        confidence: 91,
-      },
-      {
-        id: 'tl-6',
-        date: '2026-01-18',
-        title: 'Inspección pasiva de nodo IP 104.21.48.192 en Shodan InternetDB',
-        description: 'Confirmados puertos web 80/443/8443 bajo protección reverse-proxy en Frankfurt.',
-        category: 'network',
-        sourcePlatform: 'Shodan InternetDB',
-        nodeId: 'node-ip-edge',
-        confidence: 88,
-      },
+      { id: 'tl-demo-lichess', date: '2016-07-21', title: 'Alta en Lichess (@laura_ejemplo)', description: 'Perfil de Buenos Aires: contradice la ciudad esperada.', category: 'account', sourcePlatform: 'Lichess', nodeId: 'demo-lichess', confidence: 0 },
+      { id: 'tl-demo-github', date: '2019-03-14', title: 'Alta en GitHub (@laura_ejemplo)', description: 'Nombre, ciudad y web coinciden con las pistas.', category: 'account', sourcePlatform: 'GitHub', nodeId: 'demo-github', confidence: 0 },
+      { id: 'tl-demo-devto', date: '2021-05-09', title: 'Alta en Dev.to (@laura_ejemplo_dev)', description: 'Variante del alias con sufijo _dev.', category: 'account', sourcePlatform: 'Dev.to', nodeId: 'demo-devto', confidence: 0 },
+      { id: 'tl-demo-mastodon', date: '2022-11-02', title: 'Alta en Mastodon (@laura_ejemplo)', description: 'Enlaza al mismo dominio que GitHub.', category: 'account', sourcePlatform: 'Mastodon', nodeId: 'demo-mastodon', confidence: 0 },
     ],
     locations: [
-      {
-        id: 'geo-1',
-        lat: 40.4168,
-        lng: -3.7038,
-        title: 'Madrid, España',
-        subtitle: 'Ubicación principal correlacionada en perfil técnico y huso horario CET (UTC+1)',
-        category: 'profile_location',
-        confidence: 94,
-        nodeId: 'node-gh-profile',
-        source: 'Metadatos de Perfil / Zona Horaria',
-        countryCode: 'ES',
-      },
-      {
-        id: 'geo-2',
-        lat: 50.1109,
-        lng: 8.6821,
-        title: 'Frankfurt am Main, Alemania',
-        subtitle: 'Nodo IP Edge 104.21.48.192 (AS13335 Cloudflare Gateway Europeo)',
-        category: 'ip_host',
-        confidence: 88,
-        nodeId: 'node-ip-edge',
-        source: 'Shodan InternetDB / GeoIP',
-        countryCode: 'DE',
-      },
-      {
-        id: 'geo-3',
-        lat: 37.7749,
-        lng: -122.4194,
-        title: 'San Francisco, CA, EE.UU.',
-        subtitle: 'Sede del Registrador / Autoridad RDAP del Dominio Principal',
-        category: 'registrar_hq',
-        confidence: 85,
-        nodeId: 'node-domain-main',
-        source: 'Registro RDAP / WHOIS',
-        countryCode: 'US',
-      },
-      {
-        id: 'geo-4',
-        lat: -34.6037,
-        lng: -58.3816,
-        title: 'Buenos Aires, Argentina (Homónimo Descartado)',
-        subtitle: 'Ubicación asociada al perfil u/fantasma99_gamer (Confianza 32/100)',
-        category: 'profile_location',
-        confidence: 32,
-        nodeId: 'node-homonym-low',
-        source: 'Análisis de Homónimos',
-        countryCode: 'AR',
-      },
+      { id: 'geo-demo-github', lat: 39.4699, lng: -0.3763, title: 'Valencia, España — GitHub', subtitle: 'Ubicación escrita en el perfil (ficticio)', category: 'profile_location', confidence: 0, nodeId: 'demo-github', source: 'GitHub', countryCode: 'ES' },
+      { id: 'geo-demo-lichess', lat: -34.6037, lng: -58.3816, title: 'Buenos Aires, Argentina — Lichess', subtitle: 'Ubicación escrita en el perfil (ficticio)', category: 'profile_location', confidence: 0, nodeId: 'demo-lichess', source: 'Lichess', countryCode: 'AR' },
     ],
-    manualTasks: [
-      {
-        id: 'mt-1',
-        platform: 'X (Twitter)',
-        url: 'https://x.com/unfantasma',
-        target: 'unfantasma',
-        reason: 'HTTP_429',
-        httpStatus: 429,
-        retriesAttempted: 3,
-        timestamp: new Date(Date.now() - 1000 * 60 * 14).toISOString(),
-        status: 'pending',
-        notes: 'Bloqueo de límite de tasa tras 3 reintentos con backoff exponencial. Requiere apertura manual.',
-      },
-      {
-        id: 'mt-2',
-        platform: 'Instagram',
-        url: 'https://www.instagram.com/unfantasma/',
-        target: 'unfantasma',
-        reason: 'WAF_CHALLENGE',
-        httpStatus: 403,
-        retriesAttempted: 3,
-        timestamp: new Date(Date.now() - 1000 * 60 * 11).toISOString(),
-        status: 'pending',
-        notes: 'Login wall / desafío anti-bot de Meta detectado en proxy CORS.',
-      },
-      {
-        id: 'mt-3',
-        platform: 'Google Dork (Documentos Públicos)',
-        url: 'https://www.google.com/search?q=site%3Aunfantasmaenelsistema.com+filetype%3Apdf+OR+filetype%3Adocx',
-        target: 'unfantasmaenelsistema.com',
-        reason: 'MANUAL_DORK',
-        retriesAttempted: 0,
-        timestamp: new Date(Date.now() - 1000 * 60 * 8).toISOString(),
-        status: 'verified_hit',
-        notes: 'Búsqueda avanzada de documentos indexados en el dominio objetivo.',
-      },
-    ],
-    aliasVariants,
-    aiSummary:
-      'RESUMEN EJECUTIVO DE INTELIGENCIA (CASO DEMO): El objetivo "unfantasma" presenta una huella digital altamente cohesionada en el ámbito de la ciberseguridad y divulgación técnica, articulada en torno al dominio oficial unfantasmaenelsistema.com (Confianza 96/100) y su perfil de desarrollo en GitHub (94/100), ambos correlacionados geográficamente con Madrid, España. El motor de Familias de Alias identificó la variante leet-speak "unf4nt4sm4_sec" (84/100) con coincidencia de llave pública, mientras que el sistema de Puntuación de Confianza aisló con éxito el perfil homónimo "fantasma99_gamer" (32/100) ubicado en Argentina. A nivel de infraestructura, la superficie expuesta en Shodan InternetDB (104.21.48.192) está protegida tras proxy inverso con políticas DMARC/SPF estrictas y sin vulnerabilidades CVE críticas.',
-    logs: [
-      {
-        id: 'log-1',
-        timestamp: '09:30:05',
-        module: 'Core Engine',
-        message: 'Caso inicializado en IndexedDB local (Modo 100% Client-Side Serverless).',
-        level: 'info',
-      },
-      {
-        id: 'log-2',
-        timestamp: '09:30:08',
-        module: 'Alias Engine',
-        message: 'Generadas 15 variantes morfológicas (Leet speak, caracteres duplicados, sufijos).',
-        level: 'success',
-      },
-      {
-        id: 'log-3',
-        timestamp: '09:30:14',
-        module: 'crt.sh & RDAP',
-        message: 'Extraídos certificados históricos y estado DNSSEC para unfantasmaenelsistema.com.',
-        level: 'success',
-      },
-      {
-        id: 'log-4',
-        timestamp: '09:30:19',
-        module: 'Smart Retries',
-        message: 'HTTP 429 detectado en X.com tras 3 reintentos con pausa exponencial -> derivado a Tareas Manuales.',
-        level: 'warning',
-      },
-    ],
+    manualTasks: [],
+    aliasVariants: generateAliasFamilies(seed, hints),
+    logs: [{ id: 'log-demo', timestamp: new Date().toTimeString().slice(0, 8), module: 'Ejemplo', message: 'Caso de ejemplo con datos ficticios cargado.', level: 'info' }],
+    isDemo: true,
   };
+  c.nodes = rescoreProfiles(c.nodes, seed, hints);
+  const score = (id: string) => c.nodes.find((n) => n.id === id)?.confidence.total ?? 0;
+  c.timeline = c.timeline.map((t) => ({ ...t, confidence: score(t.nodeId!) }));
+  c.locations = c.locations.map((l) => ({ ...l, confidence: score(l.nodeId!) }));
+  return c;
 }
